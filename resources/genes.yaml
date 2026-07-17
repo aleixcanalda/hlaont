@@ -1,0 +1,505 @@
+# HLAONT gene manifest — the single source of per-gene behaviour (development notes invariant 5).
+#
+# All 47 IPD-IMGT/HLA genes are listed here from commit one; 36 are active in v0
+# (tier 1-3). Never branch on gene name in code — add a field here instead.
+#
+# Field provenance, so downstream editors know what to trust:
+#   tier, cn_model (H/T/K/U/Y/R/W and DRB3/4/5), calibrator, segment (where filled) —
+#     stated explicitly in DESIGN.md S2c/S1. High confidence.
+#   class — genomic region (I/II/III), standard MHC organisation, not IPD/DESIGN-sourced.
+#     Used for calibrator grouping (class I/II sit ~1-2Mb apart, DESIGN S1).
+#   cn_model: diploid_typical — DESIGN's worked example spells this `fixed_2` for
+#     HLA-A. Relabelled here on explicit guidance: classical HLA genes have published
+#     exonic deletions (e.g. HLA-A) even though the vast majority of haplotypes carry
+#     no major SV in the coding region. "fixed_2" reads as a hardcoded assumption —
+#     exactly what invariant 3 says to remove. `diploid_typical` is a prior for CI
+#     width/QC thresholds, not a skip switch. See cn_policy below.
+#   cn_model for MICA (variable_0_2) — inferred from DESIGN S1's "MICA: deletion
+#     haplotypes (linked to B*48:01)" note. The deletion can occur on either or both
+#     haplotypes independently (most individuals carry two intact copies, some carry
+#     one, rarely both are deleted), so the range is 0-2 like DRB3/4/5, not capped at 1.
+#     DESIGN gives no vocabulary for this case; this value is inferred, not a quote.
+#   segment — null except the six genes DESIGN S2c names explicitly. Filling the
+#     rest requires resources/segments.yaml, derived from the 8 MHC reference
+#     haplotypes (DESIGN S2c: "a required resource... getting these boundaries
+#     right matters more than any per-gene tuning"). Left null rather than guessed.
+#   audit_genomic_v3.65.0 — genomic-template count from ipd_audit_v3.65.0.txt,
+#     for provenance only. build.py recomputes its own counts; this is not
+#     read by any pipeline code.
+#
+# excluded: true -> HLA-Cw, a legacy alias (not a gene) and a parser edge case
+#   (DESIGN S2c), not a gene manifest entry in the working sense.
+#
+# C4A and C4B (DESIGN S2f) are both listed, sharing the rccx segment: "Total C4 CN"
+# is a single depth-ratio readout for the segment, then A-vs-B is a discrimination
+# call (exon 26 peptides) on top of it, not two independently-counted genes. Neither
+# routes through S2a-2e (no IPD star-allele nomenclature for either).
+
+manifest_version: 1
+source:
+  - DESIGN.md S2c (gene manifest, tiers)
+  - DESIGN.md S1 (CN model, calibrator panel)
+  - DESIGN.md S2f (C4A/C4B, RCCX module)
+  - ipd_audit_v3.65.0.txt (audit_genomic_v3.65.0 counts)
+
+cn_policy:
+  note: >
+    CN is estimated for every gene, every run, regardless of cn_model (DESIGN S1:
+    CN is a second readout of the read x allele assignment matrix, not a separate
+    stage gated by a per-gene switch). `cn_model` is an expected-pattern label for
+    CI width and QC thresholds, never a hardcoded assumption that skips estimation.
+    `diploid_typical` genes are not exempt from invariant 4 (a CN=0 call is guilty
+    until proven innocent): deletions occur in classical HLA genes too (e.g. HLA-A
+    exonic deletions), just less often than in the segmentally-duplicated
+    pseudogenes. Any CN deviating from a gene's typical/modal pattern requires
+    segment-level support or reference-space corroboration before being reported —
+    same bar as the tier 1 CN-variable pseudogenes, not a relaxed one.
+
+genes:
+  # --- Tier 1: comfortable (20) ---
+  - gene: HLA-A
+    class: I
+    segment: alpha_block_A
+    cn_model: diploid_typical
+    calibrator: secondary
+    typing_module: template_polish
+    tier: 1
+    audit_genomic_v3.65.0: 5707
+
+  - gene: HLA-B
+    class: I
+    segment: null
+    cn_model: diploid_typical
+    calibrator: secondary
+    typing_module: template_polish
+    tier: 1
+    audit_genomic_v3.65.0: 4192
+
+  - gene: HLA-C
+    class: I
+    segment: null
+    cn_model: diploid_typical
+    calibrator: secondary
+    typing_module: template_polish
+    tier: 1
+    audit_genomic_v3.65.0: 6240
+
+  - gene: HLA-DRB1
+    class: II
+    segment: drb_block
+    cn_model: diploid_typical
+    calibrator: secondary
+    typing_module: template_polish
+    tier: 1
+    audit_genomic_v3.65.0: 659
+
+  - gene: HLA-DQA1
+    class: II
+    segment: null
+    cn_model: diploid_typical
+    calibrator: false
+    typing_module: template_polish
+    tier: 1
+    audit_genomic_v3.65.0: 581
+
+  - gene: HLA-DQB1
+    class: II
+    segment: null
+    cn_model: diploid_typical
+    calibrator: secondary
+    typing_module: template_polish
+    tier: 1
+    audit_genomic_v3.65.0: 1193
+
+  - gene: HLA-DPB1
+    class: II
+    segment: null
+    cn_model: diploid_typical
+    calibrator: false
+    typing_module: template_polish
+    tier: 1
+    audit_genomic_v3.65.0: 1542
+
+  - gene: HLA-DPA1
+    class: II
+    segment: null
+    cn_model: diploid_typical
+    calibrator: false
+    typing_module: template_polish
+    tier: 1
+    audit_genomic_v3.65.0: 442
+
+  - gene: HLA-E
+    class: I
+    segment: alpha_block_E
+    cn_model: diploid_typical
+    calibrator: primary
+    typing_module: template_polish
+    tier: 1
+    audit_genomic_v3.65.0: 381
+
+  - gene: HLA-F
+    class: I
+    segment: null
+    cn_model: diploid_typical
+    calibrator: primary
+    typing_module: template_polish
+    tier: 1
+    audit_genomic_v3.65.0: 135
+
+  - gene: HLA-G
+    class: I
+    segment: null
+    cn_model: diploid_typical
+    calibrator: false
+    typing_module: template_polish
+    tier: 1
+    audit_genomic_v3.65.0: 169
+
+  - gene: HLA-DRA
+    class: II
+    segment: null
+    cn_model: diploid_typical
+    calibrator: primary
+    typing_module: template_polish
+    tier: 1
+    audit_genomic_v3.65.0: 127
+
+  - gene: HLA-DMA
+    class: II
+    segment: null
+    cn_model: diploid_typical
+    calibrator: false
+    typing_module: template_polish
+    tier: 1
+    audit_genomic_v3.65.0: 106
+
+  - gene: HLA-DMB
+    class: II
+    segment: null
+    cn_model: diploid_typical
+    calibrator: false
+    typing_module: template_polish
+    tier: 1
+    audit_genomic_v3.65.0: 163
+
+  - gene: HLA-DOA
+    class: II
+    segment: null
+    cn_model: diploid_typical
+    calibrator: false
+    typing_module: template_polish
+    tier: 1
+    audit_genomic_v3.65.0: 166
+
+  - gene: HLA-DOB
+    class: II
+    segment: null
+    cn_model: diploid_typical
+    calibrator: false
+    typing_module: template_polish
+    tier: 1
+    audit_genomic_v3.65.0: 123
+
+  - gene: MICA
+    class: I
+    segment: null
+    cn_model: variable_0_2     # deletion haplotypes linked to B*48:01 (DESIGN S1); see header note
+    calibrator: false
+    typing_module: template_polish
+    tier: 1
+    audit_genomic_v3.65.0: 659
+
+  - gene: MICB
+    class: I
+    segment: null
+    cn_model: diploid_typical
+    calibrator: false
+    typing_module: template_polish
+    tier: 1
+    audit_genomic_v3.65.0: 313
+
+  - gene: TAP2
+    class: II
+    segment: null
+    cn_model: diploid_typical
+    calibrator: false
+    typing_module: template_polish
+    tier: 1
+    audit_genomic_v3.65.0: 102
+
+  - gene: HLA-H
+    class: I
+    segment: alpha_block_A     # CN inherited from segment (DESIGN S2c)
+    cn_model: variable
+    calibrator: false
+    typing_module: template_polish
+    tier: 1                    # templates fine; CN is the hard part
+    audit_genomic_v3.65.0: 102
+
+  # --- Tier 2: tight (7) ---
+  - gene: HLA-DRB3
+    class: II
+    segment: drb_block
+    cn_model: variable_0_2
+    calibrator: false
+    typing_module: template_polish
+    tier: 2
+    audit_genomic_v3.65.0: 254
+
+  - gene: HLA-DRB4
+    class: II
+    segment: drb_block
+    cn_model: variable_0_2
+    calibrator: false
+    typing_module: template_polish
+    tier: 2
+    audit_genomic_v3.65.0: 101
+
+  - gene: HLA-DRB5
+    class: II
+    segment: drb_block
+    cn_model: variable_0_2
+    calibrator: false
+    typing_module: template_polish
+    tier: 2
+    audit_genomic_v3.65.0: 57
+
+  - gene: HLA-DQA2
+    class: II
+    segment: null
+    cn_model: diploid_typical
+    calibrator: false
+    typing_module: template_polish
+    tier: 2
+    audit_genomic_v3.65.0: 36
+
+  - gene: HLA-DQB2
+    class: II
+    segment: null
+    cn_model: diploid_typical
+    calibrator: false
+    typing_module: template_polish
+    tier: 2
+    audit_genomic_v3.65.0: 40
+
+  - gene: HLA-J
+    class: I
+    segment: null
+    cn_model: diploid_typical
+    calibrator: false
+    typing_module: template_polish
+    tier: 2
+    audit_genomic_v3.65.0: 26
+
+  - gene: TAP1
+    class: II
+    segment: null
+    cn_model: diploid_typical
+    calibrator: false
+    typing_module: template_polish
+    tier: 2
+    audit_genomic_v3.65.0: 13
+
+  # --- Tier 3: will mostly fail (9) ---
+  - gene: HLA-K
+    class: I
+    segment: null
+    cn_model: variable
+    calibrator: false
+    typing_module: template_polish
+    tier: 3
+    audit_genomic_v3.65.0: 7
+
+  - gene: HLA-S
+    class: I
+    segment: null
+    cn_model: diploid_typical
+    calibrator: false
+    typing_module: template_polish
+    tier: 3
+    audit_genomic_v3.65.0: 7
+
+  - gene: HLA-L
+    class: I
+    segment: null
+    cn_model: diploid_typical
+    calibrator: false
+    typing_module: template_polish
+    tier: 3
+    audit_genomic_v3.65.0: 6
+
+  - gene: HLA-DPA2
+    class: II
+    segment: null
+    cn_model: diploid_typical
+    calibrator: false
+    typing_module: template_polish
+    tier: 3
+    audit_genomic_v3.65.0: 6
+
+  - gene: HLA-DPB2
+    class: II
+    segment: null
+    cn_model: diploid_typical
+    calibrator: false
+    typing_module: template_polish
+    tier: 3
+    audit_genomic_v3.65.0: 6
+
+  - gene: HLA-V
+    class: I
+    segment: null
+    cn_model: diploid_typical
+    calibrator: false
+    typing_module: template_polish
+    tier: 3
+    audit_genomic_v3.65.0: 4
+
+  - gene: HLA-HFE
+    class: I
+    segment: null
+    cn_model: diploid_typical
+    calibrator: false
+    typing_module: template_polish
+    tier: 3
+    audit_genomic_v3.65.0: 3
+
+  - gene: HLA-R
+    class: I
+    segment: null
+    cn_model: variable
+    calibrator: false
+    typing_module: template_polish
+    tier: 3
+    audit_genomic_v3.65.0: 2
+
+  - gene: HLA-Y
+    class: I
+    segment: y_oli_insertion   # ~20% of haplotypes, mostly non-European (DESIGN S2c)
+    cn_model: variable
+    modal_cn: 0
+    calibrator: false
+    typing_module: template_polish
+    tier: 3
+    audit_genomic_v3.65.0: 1
+
+  # --- Tier 4: deferred (10) — zero genomic templates in IPD, needs S2d augmentation ---
+  - gene: HLA-N
+    class: I
+    segment: null
+    cn_model: null
+    calibrator: false
+    typing_module: null
+    tier: 4
+    audit_genomic_v3.65.0: 0
+
+  - gene: HLA-P
+    class: I
+    segment: null
+    cn_model: null
+    calibrator: false
+    typing_module: null
+    tier: 4
+    audit_genomic_v3.65.0: 0
+
+  - gene: HLA-T
+    class: I
+    segment: null
+    cn_model: variable         # class I pseudogene per DESIGN S2c "H, T, K, U, Y, R, W" list
+    calibrator: false
+    typing_module: null
+    tier: 4
+    audit_genomic_v3.65.0: 0
+
+  - gene: HLA-U
+    class: I
+    segment: null
+    cn_model: variable
+    calibrator: false
+    typing_module: null
+    tier: 4
+    audit_genomic_v3.65.0: 0
+
+  - gene: HLA-W
+    class: I
+    segment: null
+    cn_model: variable
+    calibrator: false
+    typing_module: null
+    tier: 4
+    audit_genomic_v3.65.0: 0
+
+  - gene: HLA-DRB2
+    class: II
+    segment: drb_block
+    cn_model: null
+    calibrator: false
+    typing_module: null
+    tier: 4
+    audit_genomic_v3.65.0: 0
+
+  - gene: HLA-DRB6
+    class: II
+    segment: drb_block
+    cn_model: null
+    calibrator: false
+    typing_module: null
+    tier: 4
+    audit_genomic_v3.65.0: 0
+
+  - gene: HLA-DRB7
+    class: II
+    segment: drb_block
+    cn_model: null
+    calibrator: false
+    typing_module: null
+    tier: 4
+    audit_genomic_v3.65.0: 0
+
+  - gene: HLA-DRB8
+    class: II
+    segment: drb_block
+    cn_model: null
+    calibrator: false
+    typing_module: null
+    tier: 4
+    audit_genomic_v3.65.0: 0
+
+  - gene: HLA-DRB9
+    class: II
+    segment: drb_block
+    cn_model: null
+    calibrator: false
+    typing_module: null
+    tier: 4
+    audit_genomic_v3.65.0: 0
+
+  # --- Excluded ---
+  - gene: HLA-Cw
+    class: I
+    segment: null
+    cn_model: null
+    calibrator: false
+    typing_module: null
+    tier: null
+    excluded: true
+    excluded_reason: "Legacy alias for HLA-C, not a distinct gene; also a parser edge case (DESIGN S2c)."
+    audit_genomic_v3.65.0: 0
+
+  # --- Deferred module, not template-pool genes (DESIGN S2f) ---
+  - gene: C4A
+    class: III
+    segment: rccx
+    cn_model: rccx
+    calibrator: false
+    typing_module: structural
+    tier: deferred_v0.2
+
+  - gene: C4B
+    class: III
+    segment: rccx
+    cn_model: rccx
+    calibrator: false
+    typing_module: structural
+    tier: deferred_v0.2

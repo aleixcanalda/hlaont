@@ -1,0 +1,9 @@
+# Build artifacts — regenerated deterministically by resources/templates/build.py
+resources/templates/raw/
+resources/templates/pool/
+
+__pycache__/
+*.pyc
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
