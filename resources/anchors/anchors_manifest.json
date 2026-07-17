@@ -1,0 +1,199 @@
+{
+  "c4a_c4b_note": "Out of scope for this mechanism (DESIGN.md S2f). No star-allele nomenclature; extraction is via the MHC-window region set (BAM/CRAM) or a reference-sourced anchor from GRCh38 + MHC ALT contigs (FASTQ path), neither built yet.",
+  "known_unresolved_genes": [
+    "HLA-DRB6",
+    "HLA-DRB8",
+    "HLA-DRB9"
+  ],
+  "missing_target_anchors": [],
+  "records_per_gene": {
+    "HLA-A": {
+      "decoy": 0,
+      "target": 9
+    },
+    "HLA-B": {
+      "decoy": 0,
+      "target": 11
+    },
+    "HLA-C": {
+      "decoy": 0,
+      "target": 6
+    },
+    "HLA-DMA": {
+      "decoy": 0,
+      "target": 3
+    },
+    "HLA-DMB": {
+      "decoy": 0,
+      "target": 2
+    },
+    "HLA-DOA": {
+      "decoy": 0,
+      "target": 1
+    },
+    "HLA-DOB": {
+      "decoy": 0,
+      "target": 1
+    },
+    "HLA-DPA1": {
+      "decoy": 0,
+      "target": 9
+    },
+    "HLA-DPA2": {
+      "decoy": 0,
+      "target": 2
+    },
+    "HLA-DPB1": {
+      "decoy": 0,
+      "target": 10
+    },
+    "HLA-DPB2": {
+      "decoy": 0,
+      "target": 3
+    },
+    "HLA-DQA1": {
+      "decoy": 0,
+      "target": 8
+    },
+    "HLA-DQA2": {
+      "decoy": 0,
+      "target": 2
+    },
+    "HLA-DQB1": {
+      "decoy": 0,
+      "target": 13
+    },
+    "HLA-DQB2": {
+      "decoy": 0,
+      "target": 1
+    },
+    "HLA-DRA": {
+      "decoy": 0,
+      "target": 4
+    },
+    "HLA-DRB1": {
+      "decoy": 0,
+      "target": 17
+    },
+    "HLA-DRB2": {
+      "decoy": 1,
+      "target": 0
+    },
+    "HLA-DRB3": {
+      "decoy": 0,
+      "target": 7
+    },
+    "HLA-DRB4": {
+      "decoy": 0,
+      "target": 3
+    },
+    "HLA-DRB5": {
+      "decoy": 0,
+      "target": 6
+    },
+    "HLA-DRB7": {
+      "decoy": 1,
+      "target": 0
+    },
+    "HLA-E": {
+      "decoy": 0,
+      "target": 4
+    },
+    "HLA-F": {
+      "decoy": 0,
+      "target": 4
+    },
+    "HLA-G": {
+      "decoy": 0,
+      "target": 2
+    },
+    "HLA-H": {
+      "decoy": 0,
+      "target": 2
+    },
+    "HLA-HFE": {
+      "decoy": 0,
+      "target": 2
+    },
+    "HLA-J": {
+      "decoy": 0,
+      "target": 1
+    },
+    "HLA-K": {
+      "decoy": 0,
+      "target": 2
+    },
+    "HLA-L": {
+      "decoy": 0,
+      "target": 2
+    },
+    "HLA-N": {
+      "decoy": 1,
+      "target": 0
+    },
+    "HLA-P": {
+      "decoy": 1,
+      "target": 0
+    },
+    "HLA-R": {
+      "decoy": 0,
+      "target": 1
+    },
+    "HLA-S": {
+      "decoy": 0,
+      "target": 1
+    },
+    "HLA-T": {
+      "decoy": 1,
+      "target": 0
+    },
+    "HLA-U": {
+      "decoy": 2,
+      "target": 0
+    },
+    "HLA-V": {
+      "decoy": 0,
+      "target": 2
+    },
+    "HLA-W": {
+      "decoy": 2,
+      "target": 0
+    },
+    "HLA-Y": {
+      "decoy": 0,
+      "target": 2
+    },
+    "MICA": {
+      "decoy": 0,
+      "target": 9
+    },
+    "MICB": {
+      "decoy": 0,
+      "target": 9
+    },
+    "TAP1": {
+      "decoy": 0,
+      "target": 1
+    },
+    "TAP2": {
+      "decoy": 0,
+      "target": 2
+    }
+  },
+  "sources": {
+    "FuFiHLA-ported": {
+      "provenance": "github.com/jingqing-hu/FuFiHLA v0.2.3, share/fufihla/dps-dat/136ref.fa.gz, MIT licensed (see vendor/FUFIHLA_LICENSE). Not re-derived.",
+      "records": 123
+    },
+    "cd-hit-derived": {
+      "note": "Provisional threshold, not yet validated against a real ONT/HiFi recruitment experiment (DESIGN.md S6).",
+      "params": "cd-hit-est -c 0.98 -n 10 -g 1",
+      "records": 69
+    },
+    "ipd-singleton": {
+      "records": 2
+    }
+  },
+  "total_records": 173,
+  "unresolved_reason": "Zero non-partial IPD records; absent from the FuFiHLA-ported set too. No anchor exists for these genes -- needs a non-IPD source (DESIGN.md S2d)."
+}

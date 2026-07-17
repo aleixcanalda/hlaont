@@ -75,13 +75,14 @@ _CC_VERSION_RE = re.compile(r"Release Version (\S+)")
 _GENE_FT_RE = re.compile(r'/gene="(.*)"')
 
 
-def _flush(cur: dict | None, genomic_genes: set[str], source_version: str) -> TemplateRecord | None:
+def _flush(cur: dict | None, genomic_genes: set[str], source_version: str,
+           require_genomic: bool = True) -> TemplateRecord | None:
     if cur is None or cur["gene"] is None or cur["partial"]:
         return None
     if cur["gene"] not in genomic_genes:
         return None
     genomic = cur["utr"] >= 2 and cur["intron"] > 0
-    if not genomic:
+    if require_genomic and not genomic:
         return None
     seq = "".join(cur["seq_lines"])
     if not seq:
@@ -99,11 +100,19 @@ def _flush(cur: dict | None, genomic_genes: set[str], source_version: str) -> Te
     )
 
 
-def parse_ipd_dat(dat_path: Path, genomic_genes: set[str]) -> Iterator[TemplateRecord]:
-    """Stream hla.dat, yielding one TemplateRecord per full-length ("genomic":
-    both UTRs plus at least one intron present, DESIGN.md S2b) allele whose
-    gene is in genomic_genes. Same criterion as ipd_audit.py, not FuFiHLA's
-    coarser `grep -v partial` on the description line.
+def parse_ipd_dat(dat_path: Path, genomic_genes: set[str],
+                   require_genomic: bool = True) -> Iterator[TemplateRecord]:
+    """Stream hla.dat, yielding one TemplateRecord per non-partial allele whose
+    gene is in genomic_genes.
+
+    require_genomic=True (default, template pool use): additionally require
+    "genomic" -- both UTRs plus at least one intron present (DESIGN.md S2b).
+    Same criterion as ipd_audit.py, not FuFiHLA's coarser `grep -v partial` on
+    the description line.
+
+    require_genomic=False (anchor decoy use): any non-partial record, since a
+    decoy anchor only needs to represent a paralog's sequence well enough to
+    catch stray reads -- it is never typed against.
     """
     cur: dict | None = None
     in_seq = False
@@ -112,7 +121,7 @@ def parse_ipd_dat(dat_path: Path, genomic_genes: set[str]) -> Iterator[TemplateR
     with open(dat_path, "r", errors="replace") as fh:
         for line in fh:
             if line.startswith("ID   "):
-                rec = _flush(cur, genomic_genes, source_version)
+                rec = _flush(cur, genomic_genes, source_version, require_genomic)
                 if rec is not None:
                     yield rec
                 m = _ID_RE.match(line)
@@ -169,7 +178,7 @@ def parse_ipd_dat(dat_path: Path, genomic_genes: set[str]) -> Iterator[TemplateR
                 cleaned = re.sub(r"[\s\d]", "", line).upper()
                 cur["seq_lines"].append(cleaned)
 
-    rec = _flush(cur, genomic_genes, source_version)
+    rec = _flush(cur, genomic_genes, source_version, require_genomic)
     if rec is not None:
         yield rec
 
@@ -180,11 +189,12 @@ class IPDSource:
     name = "IPD-IMGT/HLA"
 
     def __init__(self, genomic_genes: set[str], raw_dir: Path, tag: str = IPD_DEFAULT_TAG,
-                 dat_path: Path | None = None):
+                 dat_path: Path | None = None, require_genomic: bool = True):
         self.genomic_genes = genomic_genes
         self.tag = tag
         self.raw_dir = raw_dir
         self._dat_path = dat_path
+        self.require_genomic = require_genomic
         self.version = IPD_DEFAULT_VERSION if tag == IPD_DEFAULT_TAG else tag
         self.dat_sha256: str | None = None
 
@@ -200,4 +210,4 @@ class IPDSource:
             for chunk in iter(lambda: fh.read(1 << 20), b""):
                 h.update(chunk)
         self.dat_sha256 = h.hexdigest()
-        yield from parse_ipd_dat(dat_path, self.genomic_genes)
+        yield from parse_ipd_dat(dat_path, self.genomic_genes, self.require_genomic)
