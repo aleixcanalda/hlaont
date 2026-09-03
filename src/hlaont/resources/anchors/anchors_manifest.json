@@ -1,5 +1,5 @@
 {
-  "c4a_c4b_note": "Out of scope for this mechanism (DESIGN.md S2f). No star-allele nomenclature; extraction is via the MHC-window region set (BAM/CRAM) or a reference-sourced anchor from GRCh38 + MHC ALT contigs (FASTQ path), neither built yet.",
+  "c4a_c4b_note": "2026-08-25: C4A/C4B anchors are now built (cd-hit-derived, sourced from resources/templates/assembly_bundle/c4.fa.gz, real hla_seq/ per-haplotype extraction -- see prepare_candidates.py). They still have no star-allele template pool (DESIGN.md S2f) -- these anchors exist purely to recruit reads for stages/c4_cn.py's depth-ratio total CN, not for typing.",
   "known_unresolved_genes": [
     "HLA-DRB6",
     "HLA-DRB8",
@@ -7,6 +7,14 @@
   ],
   "missing_target_anchors": [],
   "records_per_gene": {
+    "C4A": {
+      "decoy": 0,
+      "target": 2
+    },
+    "C4B": {
+      "decoy": 0,
+      "target": 2
+    },
     "HLA-A": {
       "decoy": 0,
       "target": 9
@@ -128,12 +136,12 @@
       "target": 2
     },
     "HLA-N": {
-      "decoy": 1,
-      "target": 0
+      "decoy": 0,
+      "target": 2
     },
     "HLA-P": {
-      "decoy": 1,
-      "target": 0
+      "decoy": 0,
+      "target": 2
     },
     "HLA-R": {
       "decoy": 0,
@@ -144,20 +152,20 @@
       "target": 1
     },
     "HLA-T": {
-      "decoy": 1,
-      "target": 0
+      "decoy": 0,
+      "target": 3
     },
     "HLA-U": {
-      "decoy": 2,
-      "target": 0
+      "decoy": 0,
+      "target": 6
     },
     "HLA-V": {
       "decoy": 0,
       "target": 2
     },
     "HLA-W": {
-      "decoy": 2,
-      "target": 0
+      "decoy": 0,
+      "target": 4
     },
     "HLA-Y": {
       "decoy": 0,
@@ -188,12 +196,12 @@
     "cd-hit-derived": {
       "note": "Provisional threshold, not yet validated against a real ONT/HiFi recruitment experiment (DESIGN.md S6).",
       "params": "cd-hit-est -c 0.98 -n 10 -g 1",
-      "records": 69
+      "records": 83
     },
     "ipd-singleton": {
       "records": 2
     }
   },
-  "total_records": 173,
+  "total_records": 187,
   "unresolved_reason": "Zero non-partial IPD records; absent from the FuFiHLA-ported set too. No anchor exists for these genes -- needs a non-IPD source (DESIGN.md S2d)."
 }

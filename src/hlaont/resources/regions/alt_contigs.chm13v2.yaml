@@ -1,0 +1,36 @@
+# Primary-contig identification for CHM13v2.0 (DESIGN.md S3.1).
+#
+# Hand-authored, same status as alt_contigs.grch38.yaml and
+# resources/models/stage0_fastq_sieve.yaml.
+#
+# Sources, fetched/confirmed 2026-07-21:
+#   - primary_contig: UCSC's official hs1 (CHM13v2.0) chrom.sizes,
+#     https://hgdownload.soe.ucsc.edu/goldenPath/hs1/bigZips/hs1.chrom.sizes
+#     (naming: "chr6") and GCA_009914755.4.chrom.sizes.txt (RefSeq accession
+#     alias "CP068272.2"). Cross-checked against the local
+#     chr6/CHM13_0_chr6.fasta.fai in this workspace -- identical length.
+#
+# alt_contigs: intentionally empty. CHM13v2.0 is a single-haplotype T2T
+# assembly with no ALT/patch scaffolds of any kind (confirmed against the
+# full hs1.chrom.sizes list: chr1-22/X/Y/M only) -- this is a real
+# structural difference from GRCh38, not a gap in this file.
+#
+# hla_decoy_pattern: same pattern as alt_contigs.grch38.yaml. Whether any
+# HLA-decoy-style contigs are present depends on which exact reference FASTA
+# a given CRAM/BAM was aligned to, not on the primary-assembly build itself,
+# so this is duplicated rather than shared -- no CHM13-plus-decoy reference
+# is known to be in common use the way GRCh38_full_analysis_set_plus_decoy_hla.fa
+# is, but the pattern still applies if one is ever used.
+
+version: 1
+source: >
+  UCSC hs1/CHM13v2.0 chrom.sizes and this workspace's existing
+  chr6/CHM13_0_chr6.fasta.fai, fetched/confirmed 2026-07-21.
+
+primary_contig:
+  aliases: ["chr6", "CP068272.2"]
+  length: 172126628
+
+alt_contigs: []
+
+hla_decoy_pattern: '^HLA-\w+\*'

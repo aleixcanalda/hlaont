@@ -1,0 +1,16 @@
+# Stage 4 typing configuration (DESIGN.md S4, development notes invariant 10: model
+# constants live here, never hardcoded in a stage module).
+#
+# ambiguity_log_margin -- DESIGN.md S4: "emit ambiguity sets: all pairs
+# within a likelihood margin of the top, i.e. a real G-group/ambiguity
+# report." Natural-log units, applied directly to the same
+# context_log_likelihoods() log-probabilities stages/genotype.py's LRT
+# statistic uses (stages/typing.py sums them the same way). PROVISIONAL
+# (invariant 10/11): no re-derivation against real ONT R10 truth data
+# exists yet -- 3.0 nats is roughly "within a ~20x likelihood ratio of the
+# best candidate", a deliberately generous reporting choice so a real
+# ambiguous call isn't hidden, not a calibrated boundary. Revisit once
+# calib/ has held-out truth to tune this against (DESIGN.md S6).
+version: 1
+platform: ont_r10
+ambiguity_log_margin: 3.0

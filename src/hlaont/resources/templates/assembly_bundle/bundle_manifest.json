@@ -1,0 +1,25 @@
+{
+  "generated_at": "2026-09-03T09:26:09.367094+00:00",
+  "genes": [
+    "HLA-N",
+    "HLA-P",
+    "HLA-R",
+    "HLA-T",
+    "HLA-U",
+    "HLA-W",
+    "HLA-Y"
+  ],
+  "hla_seq_snapshot_version": "hla_seq-2026-09-v2",
+  "provenance": "HPRC phased assemblies + CHM13/GRCh38/chimp references, Immuannot-annotated",
+  "records_per_gene": {
+    "HLA-N": 16,
+    "HLA-P": 31,
+    "HLA-R": 6,
+    "HLA-T": 32,
+    "HLA-U": 24,
+    "HLA-W": 83,
+    "HLA-Y": 6
+  },
+  "source_hla_seq_dir_name": "hla_seq",
+  "total_records": 198
+}

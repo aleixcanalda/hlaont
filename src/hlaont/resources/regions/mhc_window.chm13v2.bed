@@ -1,0 +1,26 @@
+# MHC window on the CHM13v2.0 (T2T) primary assembly (DESIGN.md S3.1).
+#
+# CORRECTED 2026-08-31, user-directed, real HG03583 ONT benchmark: the
+# window below (chr6:1,214,347-4,666,036) was wrong -- confirmed directly,
+# a real sample's reads with 55x true depth sitting exactly on HLA-A's own
+# real coordinates produced zero anchor alignment, and the region as a
+# whole recruited essentially nothing (0 reads kept by the Stage 0 sieve
+# out of 26,598 extracted). The old window was derived from this
+# workspace's pre-existing hla_genes.bed (one directory up from hlaont/,
+# "confirmed with the user, not independently re-derived" per the
+# 2026-07-21 session that first wrote this file) -- that trust was
+# misplaced; hla_genes.bed's own CHM13 coordinates do not correspond to
+# where the MHC locus actually sits on this real chr6. The real window,
+# user-supplied and directly correct on the real sample: chr6:28,385,000-
+# 33,500,000 -- notably close to GRCh38's own MHC window position
+# (chr6:28,510,120-33,480,577, mhc_window.grch38.bed), consistent with
+# CHM13v2.0 and GRCh38 placing the MHC locus at a similar absolute
+# chromosome position, unlike what the old, wrong window implied.
+#
+# chr6 length verified independently: 172,126,628bp, matching both the
+# local CHM13_0_chr6.fasta.fai and UCSC's hs1.chrom.sizes -- this part
+# was correct and unaffected by the fix above (build detection itself,
+# input/regions.py's derive_regions(), was never the bug).
+#
+# 0-based half-open BED coordinates.
+chr6	28385000	33500000	MHC_window

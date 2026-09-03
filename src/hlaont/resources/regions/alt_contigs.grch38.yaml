@@ -1,0 +1,72 @@
+# Primary-contig identification + MHC ALT contig identifiers (DESIGN.md S3.1).
+#
+# Hand-authored, not build-script-generated -- same situation as
+# resources/models/stage0_fastq_sieve.yaml: small, fixed, not derived from a
+# larger corpus, so the header comment is the provenance record.
+#
+# Sources, fetched 2026-07-21:
+#   - primary_contig.length: NCBI GRCh38 chr6 (CM000668.2) length, from
+#     https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/001/405/GCA_000001405.15_GRCh38/
+#       GCA_000001405.15_GRCh38_assembly_structure/all_alt_scaffold_placement.txt
+#   - alt_contigs accessions/haplotypes: same file, MHC-tagged rows.
+#   - alt_contigs aliases (the "chr6_GL000250v2_alt" form): confirmed against
+#     the actual 1000G/UKB-style reference's contig names,
+#     GRCh38_full_analysis_set_plus_decoy_hla.fa.fai:
+#     https://ftp.1000genomes.ebi.ac.uk/vol1/ftp/technical/reference/GRCh38_reference_genome/
+#
+# Correction: DESIGN.md S3.1 pairs GL000250->COX and GL000251->APD. That is
+# backwards -- NCBI's own structure file (HSCHR6_MHC_APD_CTG1 = GL000250.2,
+# HSCHR6_MHC_COX_CTG1 = GL000251.2) says the reverse. Fixed here and in
+# DESIGN.md; doesn't change detection logic, which matches by accession/alias,
+# never by the English haplotype label.
+#
+# hla_decoy_pattern: the ~525 HLA decoy contigs in the 1000G/UKB-style
+# reference are not enumerated (too many, and enumerating them is exactly the
+# kind of hardcoded-coordinate fragility invariant 2 warns against) -- they
+# are detected by name pattern instead, confirmed directly against the real
+# .fai: every one is named like "HLA-A*01:01:01:01".
+
+version: 1
+source: >
+  NCBI GCA_000001405.15_GRCh38_assembly_structure/all_alt_scaffold_placement.txt
+  and the 1000G GRCh38_full_analysis_set_plus_decoy_hla.fa.fai, fetched
+  2026-07-21. Not ported from FuFiHLA -- this is GRCh38-assembly metadata,
+  not a FuFiHLA constant.
+
+# Aliases for the GRCh38 primary-assembly chr6 contig, and its expected
+# length -- used together (name AND length) to identify chr6 in a header
+# regardless of naming convention, and to fail loudly (invariant 2) if
+# neither is found rather than silently deriving an empty/wrong region.
+primary_contig:
+  aliases: ["chr6", "6"]
+  length: 170805979
+
+# The 7 GRCh38 MHC ALT scaffolds. `aliases` covers both naming conventions
+# seen in practice: the 1000G/UKB-style "chr6_GL000250v2_alt" form and the
+# bare NCBI accession "GL000250.2" form.
+alt_contigs:
+  - accession: GL000250.2
+    haplotype: APD
+    aliases: ["chr6_GL000250v2_alt", "GL000250.2"]
+  - accession: GL000251.2
+    haplotype: COX
+    aliases: ["chr6_GL000251v2_alt", "GL000251.2"]
+  - accession: GL000252.2
+    haplotype: DBB
+    aliases: ["chr6_GL000252v2_alt", "GL000252.2"]
+  - accession: GL000253.2
+    haplotype: MANN
+    aliases: ["chr6_GL000253v2_alt", "GL000253.2"]
+  - accession: GL000254.2
+    haplotype: MCF
+    aliases: ["chr6_GL000254v2_alt", "GL000254.2"]
+  - accession: GL000255.2
+    haplotype: QBL
+    aliases: ["chr6_GL000255v2_alt", "GL000255.2"]
+  - accession: GL000256.2
+    haplotype: SSTO
+    aliases: ["chr6_GL000256v2_alt", "GL000256.2"]
+
+# Regex for HLA decoy contig names (verbatim IPD-style allele nomenclature
+# used as a contig name), e.g. "HLA-A*01:01:01:01", "HLA-DRB1*15:01:01:04".
+hla_decoy_pattern: '^HLA-\w+\*'

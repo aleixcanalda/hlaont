@@ -1,0 +1,65 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hlaont"
+version = "0.1.0"
+description = "Confidence-aware full-field HLA typing from ONT R10 long reads"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Aleix Canalda" }]
+requires-python = ">=3.11"
+dependencies = [
+    "pysam",
+    "numpy",
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff", "mypy", "types-PyYAML"]
+
+[project.urls]
+Repository = "https://github.com/aleixcanalda/hlaont"
+
+# `hlaont run/update-db/update-anchors ...` once installed (pip or conda) --
+# argparse subcommands already live in src/hlaont/cli.py's main(), this just
+# wires a console entry point to it.
+[project.scripts]
+hlaont = "hlaont.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# Small, checked-in resource files only (genes.yaml, fitted models, the
+# anchor set, the assembly bundle, the chr17/C4-flanked control references,
+# region BEDs) -- NOT resources/templates/raw/ or resources/templates/pool/
+# or resources/anchors/build_staging/, which are gitignored, regenerated
+# on demand by `hlaont update-db`/`update-anchors`, and would make the
+# package unreasonably large if bundled. See README.md's "First-time setup"
+# section for the update-db/update-anchors step every fresh install needs.
+[tool.setuptools.package-data]
+hlaont = [
+    "resources/genes.yaml",
+    "resources/models/*.yaml",
+    "resources/models/vendor/*",
+    "resources/regions/*.bed",
+    "resources/regions/*.yaml",
+    "resources/anchors/*.gz",
+    "resources/anchors/*.json",
+    "resources/anchors/vendor/*",
+    "resources/templates/assembly_bundle/*",
+    "resources/controls/*.gz",
+]
+
+[tool.mypy]
+# stages/*.py and resources/templates/build.py resolve sibling-directory
+# modules (e.g. "from fastq import ...") via a runtime sys.path.insert of
+# REPO_ROOT/input -- correct at runtime, but mypy has no equivalent of its
+# own without being told. mypy_path mirrors that same lookup so
+# `mypy src/hlaont/stages/` resolves cleanly without an ad hoc MYPYPATH env
+# var per invocation (development notes: "ruff + mypy clean before commit"). "stages"
+# was added alongside "input" once cli.py started resolving
+# `from pipeline import ...` / `from output import ...` the same way.
+# Paths updated 2026-09-03 for the src/hlaont/ layout move.
+mypy_path = "src/hlaont/input:src/hlaont/stages"

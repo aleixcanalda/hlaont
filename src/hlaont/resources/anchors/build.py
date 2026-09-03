@@ -8,15 +8,23 @@
    presence in the ported set (resources/anchors/build_staging/clustered/),
    at a tighter identity threshold so a target gene's own divergent alleles
    still find a close anchor (see prepare_candidates.py for the cd-hit run).
+   C4A/C4B (2026-08-25) are staged and clustered the same way, sourced from
+   resources/templates/assembly_bundle/c4.fa.gz instead of the IPD-driven
+   ref.gene.fa.gz -- see prepare_candidates.py's own docstring for why they
+   need a different candidate source than every other target gene here.
 3. Singleton decoys for tier-4 genes absent from the ported set but with
    exactly one non-partial IPD record (DRB2, DRB7).
 
 Role (target vs decoy) is assigned from resources/genes.yaml, never from
 which of the three sources a sequence came from (development notes invariant 5).
+`typing_module: structural` (C4A/C4B) counts as target here even though it
+never enters the star-allele template pool (build.py) -- DESIGN.md S2f's
+"Total C4 CN via depth ratio" needs these reads recruited by Stage 0's
+sieve, not filtered out as decoy the way a real off-target gene would be.
 
 Known gap, not silently dropped: HLA-DRB6/DRB8/DRB9 have zero non-partial
 IPD records and are absent from the ported set too -- no anchor exists for
-them. C4A/C4B are out of scope for this mechanism entirely (DESIGN.md S2f).
+them.
 """
 from __future__ import annotations
 
@@ -109,7 +117,14 @@ def main() -> int:
     for g in manifest:
         if g.get("excluded"):
             continue
-        role_by_gene[g["gene"]] = "target" if g.get("typing_module") == "template_polish" else "decoy"
+        # "target" = recruit this gene's reads, not just reject cross-mapped
+        # ones -- true for the star-allele template_polish genes and for
+        # typing_module: structural (C4A/C4B, module docstring above), which
+        # need real recruitment for depth-ratio CN despite having no template
+        # pool of their own.
+        role_by_gene[g["gene"]] = (
+            "target" if g.get("typing_module") in ("template_polish", "structural") else "decoy"
+        )
 
     rows = []  # (gene, allele, role, source, cluster_size)
     seen: set[tuple[str, str]] = set()
@@ -117,7 +132,7 @@ def main() -> int:
     def add(header: str, source: str, cluster_size_val: int | None, seq: str):
         allele, gene = allele_and_gene(header)
         if gene not in role_by_gene:
-            return  # not a manifest gene (or C4A/C4B/excluded) -- not our concern here
+            return  # not a manifest gene, or excluded -- not our concern here
         key = (gene, allele)
         if key in seen:
             return
@@ -217,10 +232,13 @@ def main() -> int:
                               "FuFiHLA-ported set too. No anchor exists for these "
                               "genes -- needs a non-IPD source (DESIGN.md S2d).",
         "missing_target_anchors": missing_target_anchors,
-        "c4a_c4b_note": "Out of scope for this mechanism (DESIGN.md S2f). No "
-                         "star-allele nomenclature; extraction is via the MHC-window "
-                         "region set (BAM/CRAM) or a reference-sourced anchor from "
-                         "GRCh38 + MHC ALT contigs (FASTQ path), neither built yet.",
+        "c4a_c4b_note": "2026-08-25: C4A/C4B anchors are now built (cd-hit-derived, "
+                         "sourced from resources/templates/assembly_bundle/c4.fa.gz, "
+                         "real hla_seq/ per-haplotype extraction -- see "
+                         "prepare_candidates.py). They still have no star-allele "
+                         "template pool (DESIGN.md S2f) -- these anchors exist purely "
+                         "to recruit reads for stages/c4_cn.py's depth-ratio total CN, "
+                         "not for typing.",
     }
     OUT_MANIFEST.write_text(json.dumps(manifest_out, indent=2, sort_keys=True) + "\n")
 

@@ -45,6 +45,7 @@ from sources import IPDSource  # noqa: E402
 GENES_YAML = REPO_ROOT / "resources" / "genes.yaml"
 POOL_FASTA = REPO_ROOT / "resources" / "templates" / "pool" / "ref.gene.fa.gz"
 RAW_DAT = REPO_ROOT / "resources" / "templates" / "raw" / "hla-v3.65.0-alpha.dat"
+C4_BUNDLE_FASTA = REPO_ROOT / "resources" / "templates" / "assembly_bundle" / "c4.fa.gz"
 
 STAGING = HERE / "build_staging"
 CANDIDATES_DIR = STAGING / "candidates"       # -> cd-hit-est input, one gene per file
@@ -126,17 +127,43 @@ def main() -> int:
     }
     new_targets = sorted(target_genes_v0 - FUFIHLA_PORTED_TARGETS)
 
+    # C4A/C4B (2026-08-25, DESIGN.md S2f): typing_module: structural, not
+    # template_polish -- no star-allele template pool exists for them at all,
+    # so their candidates can't come from POOL_FASTA the way every other
+    # target gene's do. genes.yaml's own anchor_source: c4_bundle field
+    # (data-driven, invariant 5 -- not a hardcoded "C4A"/"C4B" check) points
+    # at resources/templates/build_c4_bundle.py's separate real hla_seq/
+    # extraction instead. Same cd-hit-est clustering treatment either way --
+    # C4's own real diversity (362 distinct sequences before clustering,
+    # spanning both long/short form and the A/B split) is exactly the kind
+    # of redundancy this clustering step exists to collapse for every other
+    # target gene here.
+    c4_targets = sorted(
+        g["gene"] for g in manifest
+        if not g.get("excluded") and g.get("anchor_source") == "c4_bundle"
+    )
+
     print(f"[anchors] {len(new_targets)} new target genes need tight-threshold "
           f"clustering: {new_targets}", file=sys.stderr)
+    print(f"[anchors] {len(c4_targets)} C4 gene(s) need clustering from the "
+          f"c4_bundle source: {c4_targets}", file=sys.stderr)
 
     pool_by_gene = read_pool_fasta(POOL_FASTA)
+    c4_bundle_by_gene: dict[str, list[tuple[str, str]]] = {}
+    if C4_BUNDLE_FASTA.exists():
+        c4_bundle_by_gene = read_pool_fasta(C4_BUNDLE_FASTA)
+    elif c4_targets:
+        print(f"[anchors] WARNING: {C4_BUNDLE_FASTA} missing -- run "
+              f"resources/templates/build_c4_bundle.py first. {c4_targets} get "
+              f"zero anchors this pass.", file=sys.stderr)
 
     cdhit_commands = []
-    for gene in new_targets:
-        records = pool_by_gene.get(gene, [])
+    for gene in new_targets + c4_targets:
+        source_by_gene = c4_bundle_by_gene if gene in c4_targets else pool_by_gene
+        records = source_by_gene.get(gene, [])
         if not records:
             print(f"[anchors] WARNING: {gene} is a v0 target with zero genomic "
-                  f"templates in the pool -- skipping, check the pool build.",
+                  f"templates in its candidate source -- skipping, check the build.",
                   file=sys.stderr)
             continue
         in_path = CANDIDATES_DIR / f"{gene}.fa"

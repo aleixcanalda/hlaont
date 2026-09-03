@@ -1,0 +1,52 @@
+# Stage 2 read-level likelihood configuration for ONT R10 (DESIGN.md S2e,
+# development notes invariant 10: model constants live here, never hardcoded in a
+# stage module). This is the operating-point model (invariant 1) -- the
+# tool targets 15X ONT R10, not HiFi. HiFi appears only as DESIGN.md S6's
+# milestone-1 regression check against FuFiHLA's own reported number; that
+# validation run supplies its own flat rate as a plain ErrorModel argument
+# to stages/genotype.py (see stages/genotype.py's `ErrorModel`/
+# `load_error_model`), never a second persisted "shipped" model file here.
+#
+# **Revised 2026-07-23:** the original version of this file shipped a flat
+# `edit_error_rate` (a single per-base binomial rate) as a placeholder,
+# since no real error model existed in the repo yet. That placeholder is
+# gone -- ONT R10 errors are massively context-dependent (homopolymers
+# dominate; see resources/models/vendor/NOTICE.md), so a flat rate both
+# over-penalises clean, non-repetitive sequence and under-penalises
+# homopolymer runs, exactly the regions this project's novelty-calling
+# depends on getting right (invariant 1: "any threshold inherited from a
+# HiFi tool ... is wrong here by default and must be re-derived, not
+# copied" -- the same principle applies to a made-up ONT rate that was
+# never really an ONT-specific derivation either). `context_model` below
+# now points at a real per-7-mer empirical error table trained on actual
+# ONT R10.4.1 reads (Badread's `nanopore2023`, ported verbatim -- see
+# resources/models/vendor/NOTICE.md for full provenance/license). This is
+# still not a model fitted from *our own* cohort (DESIGN.md S3's eventual
+# homopolymer-context model for Stage 3/4 consensus/typing), but it is a
+# real ONT R10 measurement, not a guess -- a meaningfully better
+# provisional stand-in than the flat rate it replaces. Re-derive again
+# once calib/ can fit one from this cohort's own homozygous-reference
+# positions.
+
+version: 2
+platform: ont_r10
+source: >
+  context_model is Badread's nanopore2023 table (real ONT R10.4.1
+  alignments, github.com/rrwick/Badread), NOT fitted from our own data.
+  Provisional per invariant 11 -- superseded by a calib/-fitted model once
+  tests/data/ ONT R10 fixtures exist.
+
+# Path (relative to this file) to the vendored Badread per-7-mer error
+# table -- see stages/error_model.py for how it's parsed and applied, and
+# resources/models/vendor/NOTICE.md for provenance/license (GPLv3).
+context_model: vendor/nanopore2023.gz
+
+# Floor applied to any (read, allele) pair with no reported alignment at
+# all (GeneAssignmentMatrix.aln_block_len == 0 / no captured
+# AlignmentSpan) -- treated as if every base of the read's own best real
+# span elsewhere were an edit, i.e. as improbable as a full-length
+# mismatch, never as an unweighted zero (which would break log-likelihood
+# arithmetic) and never silently omitted from the mixture. There is no
+# alignment to take k-mer context from in this case, so this stays a flat
+# rate even though the aligned-cell scoring above is now context-aware.
+unaligned_edit_rate: 0.75

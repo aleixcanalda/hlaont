@@ -1,0 +1,28 @@
+# MHC window on the GRCh38 primary assembly (DESIGN.md S3.1).
+#
+# chr6:28,510,120-33,480,577 (1-based) -- the union of the 7 MHC ALT
+# scaffolds' parent-chromosome placements (parent_start/parent_stop columns),
+# not picked from a review paper. Source, fetched 2026-07-21:
+#
+#   https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/001/405/GCA_000001405.15_GRCh38/
+#     GCA_000001405.15_GRCh38_assembly_structure/all_alt_scaffold_placement.txt
+#
+# Rows for the 7 MHC ALT scaffolds (alt_scaf_acc, parent_start, parent_stop):
+#   GL000250.2 (APD)   28734408  33367716
+#   GL000251.2 (COX)   28510120  33383765   <- min parent_start
+#   GL000252.2 (DBB)   28734408  33361299
+#   GL000253.2 (MANN)  28734408  33258200
+#   GL000254.2 (MCF)   28734408  33391865
+#   GL000255.2 (QBL)   28734408  33411973
+#   GL000256.2 (SSTO)  28691466  33480577   <- max parent_stop
+#
+# Note: DESIGN.md S3.1 lists GL000250->COX and GL000251->APD -- that pairing
+# is backwards versus this source; see the correction there and in
+# alt_contigs.grch38.yaml. Doesn't affect this window (it's the min/max
+# across all 7 regardless of which is which).
+#
+# 0-based half-open BED coordinates: 28510120-1=28510119, end=33480577.
+# The chrom column is written as "chr6" (1000G/UKB-style naming); callers
+# resolve this to whichever chr6 alias is actually present in a given
+# header (see input/regions.py, alt_contigs.grch38.yaml's primary_contig).
+chr6	28510119	33480577	MHC_window

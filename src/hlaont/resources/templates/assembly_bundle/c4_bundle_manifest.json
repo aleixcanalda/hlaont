@@ -1,0 +1,17 @@
+{
+  "generated_at": "2026-08-26T07:17:44.614652+00:00",
+  "hla_seq_snapshot_version": "hla_seq-2025-03-v1",
+  "note": "gene/allele collapsed C4AL/C4AS->C4A, C4BL/C4BS->C4B (see script docstring); real form kept in each record's own description only.",
+  "records_per_gene": {
+    "C4A": 188,
+    "C4B": 174
+  },
+  "records_per_real_form": {
+    "C4AL": 170,
+    "C4AS": 18,
+    "C4BL": 76,
+    "C4BS": 98
+  },
+  "source_hla_seq_dir_name": "hla_seq",
+  "total_records": 362
+}
