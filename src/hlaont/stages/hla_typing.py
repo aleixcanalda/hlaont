@@ -65,6 +65,7 @@ from assign import (  # noqa: E402
     subset_matrix_by_read_ids,
 )
 from consensus import HaplotypeConsensus  # noqa: E402
+from error_model import build_aligned_strings  # noqa: E402
 from genotype import (  # noqa: E402
     OntR10Config,
     candidate_alleles,
@@ -74,6 +75,7 @@ from genotype import (  # noqa: E402
 )
 
 DEFAULT_TYPING_PARAMS = REPO_ROOT / "resources" / "models" / "stage4_typing.yaml"
+DEFAULT_POOL_MODELS = REPO_ROOT / "resources" / "templates" / "pool" / "ref.gene.models.jsonl.gz"
 
 _MIN_P_WRONG = 1e-6
 _MAX_GQ = 60.0
@@ -153,6 +155,168 @@ _STAGE4_FALLBACK_MIN_SECONDARY_RATIO = 0.5
 # aligns the consensus as -- never a real IPD allele id, so it can't collide
 # with a pool column (assign.py raises loudly if it ever did).
 _CONSENSUS_READ_ID = "consensus"
+
+
+# CDS-weighted mismatch rate for called_allele selection (2026-09-18, real
+# HG03009 finding). `_tiebreak_key()`'s plain nm/aln_block_len rate treats
+# every mismatch identically regardless of where it falls -- but IPD's own
+# nomenclature convention makes a field-3/4-only difference a *non-coding*
+# difference by definition, so a candidate that's genuinely the wrong
+# lineage (not just missing some real novel non-coding variation) should
+# show real *coding* differences, a materially different biological signal
+# than intron/UTR noise. Confirmed on both real motivating cases from this
+# session: HLA-DRB1*14:04:01:01 (the true HG03009 answer) differs from the
+# consensus at 21 positions, all 21 intronic, zero CDS -- exactly the
+# "real novel non-coding variation" shape DESIGN.md's own field-4
+# convention predicts. Its real rival, *14:07:01 (wins outright on the
+# plain rate, wrongly), differs at 13 positions but 5 of them are in the
+# CDS -- real, protein-level divergence, evidence of a genuinely different
+# lineage, not novelty. HG00320's already-correctly-resolved pair shows
+# the same pattern in the same direction (true answer *08:01:01:01: 1
+# variant, 0 CDS; wrong rival *08:02:01:01: 8 variants, 3 CDS) --
+# weighting does not risk that case, it only makes the existing correct
+# margin larger. `_CDS_MISMATCH_WEIGHT` (5.0) is provisional (invariant
+# 11): chosen to give a real CDS difference material extra weight without
+# being disqualifying (a real coding novel:nonsynonymous call is a
+# legitimate DESIGN.md S5 taxonomy, not something this rate should treat
+# as automatically wrong) -- not independently fitted, needs the same full
+# real-benchmark validation as every other threshold in this area before
+# being trusted.
+#
+# `GeneModelLite`/`load_gene_model()`/`_locate()`/`_diff_against_reference()`
+# below are duplicated from stages/novelty.py rather than imported from it:
+# novelty.py itself imports `TypingCall` from this module, so importing the
+# other direction would be circular. Keep in sync with novelty.py's own
+# copies if that module's logic changes.
+_CDS_MISMATCH_WEIGHT = 5.0
+
+
+@dataclass(frozen=True)
+class _GeneModelLite:
+    cds_exons: tuple[tuple[int, int], ...]
+    introns: tuple[tuple[int | None, int, int], ...]
+    utrs: tuple[tuple[int, int], ...]
+
+
+@dataclass(frozen=True)
+class _RawVariant:
+    pos: int
+    ref: str
+    alt: str
+
+
+_GENE_MODEL_CACHE: dict[Path, dict[str, _GeneModelLite]] = {}
+
+
+def _all_gene_models_lite(models_path: Path) -> dict[str, _GeneModelLite]:
+    """Parses `models_path` once per process and caches every allele's gene
+    model in memory (2026-09-18, real perf finding: `_cds_weighted_mismatches()`
+    is called once per *candidate* inside `_tiebreak_key()`'s own `min()`
+    scan -- for a dense gene like HLA-A/HLA-C that's thousands of calls per
+    haplotype, and re-opening + linearly re-scanning the whole gzipped
+    ~24,000-record models file from scratch on every single one made a real
+    sample run go from single-digit minutes to indefinitely slow. One full
+    scan, cached for the rest of this process's lifetime, costs the same as
+    a single `_load_gene_model_lite()` call used to."""
+    cached = _GENE_MODEL_CACHE.get(models_path)
+    if cached is not None:
+        return cached
+    import gzip
+    import json
+
+    out: dict[str, _GeneModelLite] = {}
+    if models_path.exists():
+        with gzip.open(models_path, "rt") as fh:
+            for line in fh:
+                obj = json.loads(line)
+                out[obj["allele"]] = _GeneModelLite(
+                    cds_exons=tuple((s, e) for s, e in obj["cds_exons"]),
+                    introns=tuple((n, s, e) for n, s, e in obj["introns"]),
+                    utrs=tuple((s, e) for s, e in obj["utrs"]),
+                )
+    _GENE_MODEL_CACHE[models_path] = out
+    return out
+
+
+def _load_gene_model_lite(allele: str, models_path: Path = DEFAULT_POOL_MODELS) -> _GeneModelLite | None:
+    return _all_gene_models_lite(models_path).get(allele)
+
+
+def _locate_lite(pos1: int, gm: _GeneModelLite) -> str:
+    if any(s <= pos1 <= e for s, e in gm.cds_exons):
+        return "cds"
+    if any(s <= pos1 <= e for _, s, e in gm.introns):
+        return "intron"
+    if any(s <= pos1 <= e for s, e in gm.utrs):
+        return "utr"
+    return "unannotated"
+
+
+def _diff_against_reference_lite(
+    ref_seq: str, consensus_seq: str, span: AlignmentSpan
+) -> list[_RawVariant]:
+    aligned_ref, aligned_consensus = build_aligned_strings(
+        ref_seq, consensus_seq,
+        ref_start=span.ref_start, ref_end=span.ref_end,
+        read_start=span.read_start, read_end=span.read_end,
+        strand=span.strand, cigar=span.cigar,
+    )
+    variants: list[_RawVariant] = []
+    ref_pos = span.ref_start
+    i, n = 0, len(aligned_ref)
+    while i < n:
+        r, q = aligned_ref[i], aligned_consensus[i]
+        if r != "-":
+            if q != r:
+                variants.append(_RawVariant(pos=ref_pos + 1, ref=r, alt=(q if q != "-" else "")))
+            ref_pos += 1
+            i += 1
+        else:
+            j = i
+            while j < n and aligned_ref[j] == "-":
+                j += 1
+            variants.append(_RawVariant(pos=ref_pos + 1, ref="", alt=aligned_consensus[i:j]))
+            i = j
+    return variants
+
+
+def _cds_weighted_mismatches(
+    allele: str, consensus_seq: str, span: AlignmentSpan, allele_seq: str,
+) -> float:
+    """Real edit-distance-weighted mismatch count against `allele`: each
+    variant contributes its own base length (`max(len(ref), len(alt))`,
+    matching how `nm` counts per base -- not `novelty.py`'s block-count
+    `n_variants`), with any base inside the real CDS weighted
+    `_CDS_MISMATCH_WEIGHT` times over. Falls back to weight 1 everywhere
+    if this allele has no gene model on record (e.g. a synthetic test
+    fixture), so this is a no-op wherever the real annotation isn't
+    available.
+
+    2026-09-18 fix (real H1437/HG00731 regression). The original version
+    summed +1 per *variant block* from `_diff_against_reference_lite()`,
+    which merges a multi-base insertion into a single block regardless of
+    length -- collapsing a real 8-14bp intronic STR-length insertion down
+    to the same weight as a lone SNP, discarding exactly the length
+    information the plain `nm`-based rate this replaced used to have.
+    That let a genuinely-wrong candidate whose only divergence was one
+    such insertion tie (or beat, on the coverage tiebreak) a true
+    candidate with more, but smaller, real differences -- confirmed on
+    both real cases: H1437/HLA-DRB1 hap1 (`*03:01:01:02` true vs
+    `*03:01:01:01`, an 8bp `GTGTGTGT` insertion) and HG00731/HLA-DRB1
+    hap1 (`*12:01:01:03` true vs `*12:01:01:04`, a 14bp `GTGTGTGTGTGTGA`
+    insertion), both intronic microsatellites, zero CDS variants in
+    either pair -- the CDS weighting itself never even engaged. Weighting
+    by base length instead reduces to exactly the plain `nm/aln` rate
+    whenever no variant touches the CDS, restoring the pre-CDS-weighting
+    behaviour for the common case while still multiplying real CDS bases."""
+    gm = _load_gene_model_lite(allele)
+    variants = _diff_against_reference_lite(allele_seq, consensus_seq, span)
+    total = 0.0
+    for v in variants:
+        base_len = max(len(v.ref), len(v.alt))
+        weight = _CDS_MISMATCH_WEIGHT if (gm is not None and _locate_lite(v.pos, gm) == "cds") else 1.0
+        total += base_len * weight
+    return total
 
 
 @dataclass(frozen=True)
@@ -453,10 +617,12 @@ def _type_haplotype_from_single_row_matrix(
 
     def _rate_and_coverage(allele: str) -> tuple[float, int]:
         j = col_index[allele]
-        nm = int(matrix.nm[0, j])
         aln = int(matrix.aln_block_len[0, j])
         span = matrix.spans[(0, j)]
-        return nm / aln, span.read_end - span.read_start
+        weighted_mismatches = _cds_weighted_mismatches(
+            allele, consensus.sequence, span, allele_sequences[allele],
+        )
+        return weighted_mismatches / aln, span.read_end - span.read_start
 
     def _tiebreak_key(i: int) -> tuple[int, int]:
         rate, coverage = _rate_and_coverage(candidates[i])

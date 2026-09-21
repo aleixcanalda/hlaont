@@ -36,10 +36,15 @@ from sources import (  # noqa: E402
     IPD_DEFAULT_TAG,
     IPDSource,
     TemplateRecord,
+    cds_exon_numbers,
     cds_nucleotide_sequence,
 )
 
-POOL_SCHEMA_VERSION = 5  # 5: ref.gene.meta.tsv.gz gained gtf_template_allele (2026-09-03,
+POOL_SCHEMA_VERSION = 6  # 6: ref.gene.cds_catalogue.tsv.gz gained partial + exon_numbers
+                          # columns, and now includes /partial IPD records too (2026-09-20,
+                          # HG03009/HLA-C*07:457) -- stages/novelty.py's partial-CDS
+                          # extension-matching gate (DESIGN.md S5).
+                          # 5: ref.gene.meta.tsv.gz gained gtf_template_allele (2026-09-03,
                           # user-requested: calls.tsv's template_allele column showed a raw
                           # content-hash accession, e.g. "HLA-W*asm3e9f0510aa", for the
                           # assembly-extracted genes -- this is the source hla_seq/ GTF's own
@@ -139,17 +144,31 @@ def write_gene_models_jsonl_gz(path: Path, records: list[TemplateRecord]) -> Non
 
 
 def write_cds_catalogue_tsv_gz(path: Path, records: list[TemplateRecord]) -> None:
-    """Every non-partial allele's CDS nucleotide sequence, genomic or not --
-    DESIGN.md S5's `extension` class ("CDS matches a known allele; IPD
-    holds no full-length record. Not a novel allele.") needs to check a
+    """Every allele's CDS nucleotide sequence, genomic or not, partial or
+    not -- DESIGN.md S5's `extension` class ("CDS matches a known allele;
+    IPD holds no full-length record. Not a novel allele.") needs to check a
     consensus's CDS against alleles IPD only ever recorded as exon-only,
     which never enter resources/templates/pool/ref.gene.fa.gz's genomic-only
     pool (invariant 7: getting `extension` vs `novel` wrong "is the mistake
     most likely to embarrass us"). Records with no parseable CDS (e.g. a
     pseudogene record with a disrupted/unannotated ORF) are skipped, not
     written with an empty sequence -- absence from the catalogue, not a
-    false empty match, same "loud, not silent" stance as elsewhere here."""
-    cols = ["gene", "ipd_id", "allele", "genomic", "fields", "cds_length", "cds_sequence"]
+    false empty match, same "loud, not silent" stance as elsewhere here.
+
+    `partial` rows (2026-09-20, real HG03009/HLA-C*07:457 case: a genuine
+    IPD allele whose only submission is a truncated, exon-2/3-only CDS --
+    never a genomic record, and never a complete-CDS one either, so the
+    plain exact-full-CDS extension lookup above can never see it) exist
+    purely to feed stages/novelty.py's `_partial_extension_match()` gate,
+    which needs to know exactly which exon numbers each fragment covers
+    before treating a match as confirming anything -- `exon_numbers` is
+    that, comma-separated in transcript order (empty if unresolvable, e.g.
+    an old record with no `/number` qualifier on its exon features; such
+    rows are still written -- for the plain non-partial extension lookup,
+    exon_numbers is unused -- but can never satisfy the partial-match gate,
+    which requires it)."""
+    cols = ["gene", "ipd_id", "allele", "genomic", "partial", "fields",
+            "cds_length", "cds_sequence", "exon_numbers"]
     n_skipped = 0
     with open(path, "wb") as raw:
         with gzip.GzipFile(fileobj=raw, mode="wb", mtime=0) as gz:
@@ -159,8 +178,10 @@ def write_cds_catalogue_tsv_gz(path: Path, records: list[TemplateRecord]) -> Non
                     n_skipped += 1
                     continue
                 cds = cds_nucleotide_sequence(r.sequence, r.gene_model)
-                row = [r.gene, r.ipd_id, r.allele, str(r.genomic), str(r.fields),
-                       str(len(cds)), cds]
+                exon_numbers = cds_exon_numbers(r.gene_model)
+                exon_numbers_str = ",".join(str(n) for n in exon_numbers) if exon_numbers else ""
+                row = [r.gene, r.ipd_id, r.allele, str(r.genomic), str(r.partial),
+                       str(r.fields), str(len(cds)), cds, exon_numbers_str]
                 gz.write(("\t".join(row) + "\n").encode())
     if n_skipped:
         print(f"[build] CDS catalogue: skipped {n_skipped} record(s) with no "
@@ -264,7 +285,8 @@ def main(argv: list[str] | None = None) -> int:
     # to require_genomic at construction (this module's own existing
     # design, untouched here).
     cds_source = IPDSource(genomic_genes=target_genes, raw_dir=args.raw_dir,
-                            tag=args.ipd_tag, dat_path=args.ipd_dat, require_genomic=False)
+                            tag=args.ipd_tag, dat_path=args.ipd_dat, require_genomic=False,
+                            drop_partial=False)
     cds_records = sorted(cds_source.records(), key=lambda r: (r.gene, r.allele, r.ipd_id))
 
     args.out_dir.mkdir(parents=True, exist_ok=True)

@@ -217,6 +217,60 @@ def classical_matrices_for_reads(
     return out
 
 
+def gene_allele_pool(gene: str, pool_meta: Path = DEFAULT_POOL_META) -> tuple[str, ...]:
+    """One gene's full, sorted allele pool -- the same column set
+    `build_gene_matrices()` gives that gene's matrix (module docstring),
+    exposed standalone for callers that need it before/without a matrix
+    (e.g. `stages/pipeline.py`'s `rescue_stolen_reads()`, which needs the
+    full candidate set to densely realign a gene's own under-recruited
+    reads against). Thin public wrapper over `_load_allele_gene_and_catalogue()`
+    -- returns `()` for a gene with no pool entries, never a KeyError."""
+    _, genes_to_alleles = _load_allele_gene_and_catalogue(pool_meta)
+    return tuple(genes_to_alleles.get(gene, []))
+
+
+def merge_matrices(a: GeneAssignmentMatrix, b: GeneAssignmentMatrix) -> GeneAssignmentMatrix:
+    """Union two same-gene, same-column (`allele_ids`) matrices over
+    disjoint rows -- e.g. `rescue_stolen_reads()` stitching a dense
+    realignment of a gene's previously-unmatched reads back onto its
+    original Stage 1 matrix. Raises loudly (never silently drops or
+    double-counts a read) if the two don't actually share one gene/column
+    set, or if a read_id appears in both -- both would mean a caller
+    built `b` against the wrong candidate set or the wrong read pool,
+    a real bug to surface, not paper over."""
+    if a.gene != b.gene:
+        raise ValueError(f"merge_matrices: gene mismatch ({a.gene!r} vs {b.gene!r})")
+    if a.allele_ids != b.allele_ids:
+        raise ValueError(
+            f"{a.gene}: merge_matrices requires identical allele_ids "
+            f"({len(a.allele_ids)} vs {len(b.allele_ids)} columns)"
+        )
+    overlap = set(a.read_ids) & set(b.read_ids)
+    if overlap:
+        raise ValueError(
+            f"{a.gene}: merge_matrices got {len(overlap)} read_id(s) present in "
+            f"both matrices -- caller must guarantee disjoint row sets"
+        )
+    read_ids = tuple(sorted(a.read_ids + b.read_ids))
+    index_in_merged = {rid: i for i, rid in enumerate(read_ids)}
+    matches = np.zeros((len(read_ids), len(a.allele_ids)), dtype=a.matches.dtype)
+    aln_block_len = np.zeros_like(matches)
+    nm = np.zeros_like(matches)
+    spans: dict[tuple[int, int], AlignmentSpan] = {}
+    for src in (a, b):
+        for old_i, rid in enumerate(src.read_ids):
+            new_i = index_in_merged[rid]
+            matches[new_i, :] = src.matches[old_i, :]
+            aln_block_len[new_i, :] = src.aln_block_len[old_i, :]
+            nm[new_i, :] = src.nm[old_i, :]
+        for (old_i, j), span in src.spans.items():
+            spans[(index_in_merged[src.read_ids[old_i]], j)] = span
+    return GeneAssignmentMatrix(
+        gene=a.gene, read_ids=read_ids, allele_ids=a.allele_ids,
+        matches=matches, aln_block_len=aln_block_len, nm=nm, spans=spans,
+    )
+
+
 def _load_allele_gene_and_catalogue(meta_path: Path) -> tuple[dict[str, str], dict[str, list[str]]]:
     """allele -> gene, and gene -> sorted list of every allele in its pool
     (the latter defines each GeneAssignmentMatrix's full column set)."""

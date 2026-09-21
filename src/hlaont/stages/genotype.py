@@ -177,6 +177,95 @@ _MAX_CANDIDATES_AFTER_PREFILTER = 50
 # ceiling on how many genuinely distinct alleles a segment carries.
 _MAX_CANDIDATES_PER_SIGNATURE = 2
 
+# Pre-search read-count/ratio floor (added 2026-09-10, real H2009 CASTLE
+# HLA-DQB1 finding, checked directly against real numbers before building
+# this). select_template_set()'s own argmax-over-combinations search picks
+# whichever candidate SET has the highest total *summed* log-likelihood --
+# not the set with the most reads agreeing with it. Confirmed directly on
+# real data: a combo containing a component backed by only 2 reads, each
+# with a catastrophic ~1800-log-unit advantage over everything else in that
+# gene's true allele family, out-scored the true heterozygous pair (whose
+# 20 genuinely-discriminating reads each carried only a ~40-log-unit
+# advantage) -- summed log-likelihood rewards a couple of extreme per-read
+# gaps over a broader, subtler true signal. By the time stages/pipeline.py's
+# own post-consensus min_reads_per_haplotype/min_haplotype_read_ratio floor
+# would reject that 2-read winner, the true pair never got a turn: only the
+# argmax winner is ever checked against it.
+#
+# A combo whose EM-implied hard read split (argmax responsibility per read
+# from its own converged weights, the same per-read winner-takes-all
+# reduction stages/consensus.py's real post-alignment partition uses
+# downstream) fails either floor is disqualified from ever winning the
+# argmax, so the search naturally falls through to the next-best combo.
+#
+# Disabled by default (0 reads / 0.0 ratio, i.e. no combo is ever
+# disqualified) so every existing caller of select_template_set() keeps its
+# exact prior behaviour unless it opts in.
+# select_template_set_ont_r10() opts in with the ONT-path values below;
+# select_template_set_flat() (the frozen DESIGN.md S6 HiFi milestone-1
+# FuFiHLA-parity regression target) deliberately does not, matching how
+# every other ONT-specific tuning constant in this module is scoped.
+#
+# `_ONT_MIN_HAPLOTYPE_READ_RATIO`: tried 0.1, then 0.2, both reverted --
+# real 2026-09-10/11 investigation, both raised and root-caused by the user
+# directly questioning the mechanism rather than more threshold sweeps.
+#
+# The 0.1 -> 0.2 revision (same day) was itself a real fix for three cross-
+# sample regressions (H2009/MICA, HG03583/DPA1, HG03583/DPB1, ratio
+# 0.130-0.154) without disturbing the six genuine heterozygous cases that
+# motivated 0.1 (ratio >= 0.280) -- but a follow-up real-benchmark check
+# found 0.2 itself broke three *different* real cases (HG01258/HLA-J,
+# HG00253/HLA-N, HG00320/HLA-DRB1, ratio 0.184-0.302) that 0.1 had gotten
+# right, a net wash (+3/-3) rather than a fix.
+#
+# Root cause, confirmed by direct per-combination diagnostics (not
+# guessed): select_template_set()'s pre-search floor uses each combo's
+# *EM-implied* hard read split (a cheap proxy computed before any real
+# alignment) to decide eligibility -- but that proxy systematically
+# UNDER-estimates how skewed a real, correct pair's split actually is once
+# Stage 3 does real alignment. Real HG03583/DPA1 case: the true pair's
+# EM-implied split looked close enough to disqualify at both 0.1 and 0.2,
+# but its *real* post-consensus split (computed by
+# stages/consensus.py's actual re-alignment) was 9:113 (ratio 0.08) --
+# far more skewed than any ratio floor at this stage should ever pass, yet
+# the pre-search floor's own under-estimate had already rejected it in
+# favour of a worse-scoring, more EM-evenly-split WRONG pair. Any ratio
+# value here trades one class of real case against another, because the
+# proxy driving the decision is the wrong signal for a ratio floor to use
+# pre-search -- the same lesson TAP1/DQB1's own reverted attempts already
+# found for other thresholds in this module (module docstring above).
+#
+# Fix: the ratio component of the pre-search floor is retired (0.0, a
+# no-op -- see _passes_read_count_floor). Only the absolute-count
+# component (_ONT_MIN_READS_PER_HAPLOTYPE=3) still disqualifies a combo
+# pre-search -- sufficient on its own for the original DQB1 bug (the
+# spurious pair's real problem was an EM-implied count of ~2, well under
+# 3, no ratio needed) without ever touching a combo whose *EM-implied*
+# minority count already clears 3, which is exactly the case for every one
+# of the six real regressions above. The ratio question -- is a
+# genuinely-selected pair's split too skewed to represent two real
+# alleles -- is left entirely to stages/pipeline.py's existing
+# *post*-consensus min_haplotype_read_ratio check (still 0.1, unchanged),
+# which acts on the real alignment-based count, not the EM proxy, and
+# whose failure mode (fall back to the major allele of the *same*,
+# already-correctly-selected pair) is much gentler than the pre-search
+# floor's (jump to a different, unrelated combo -- see genotype.py's
+# _score_combo argmax-over-eligible-combos mechanism).
+#
+# Real validation, all on the 2026-09-10/11 session's own already-
+# extracted samples, floor=(abs3, ratio0.0), post-consensus ratio
+# unchanged at 0.1: DQB1/H2009 recovers the true pair (LRT=730, real split
+# 28:22); HG03583 DPA1/DPB1 both now correctly collapse to their true
+# homozygous allele (real splits 9:113 and 117:3, both -- previously
+# unfixed by either 0.1 or 0.2); HG01258/HLA-J, HG00253/HLA-N and
+# HG00320/HLA-DRB1 all reach the search stage with their correct/expected
+# pair undisturbed (verified via the real post-consensus counts each now
+# produces against the unchanged 0.1 post-consensus ratio). Still
+# provisional (invariant 11) -- not yet re-run through the full 6-sample
+# benchmark end-to-end as of this constant's own change.
+_ONT_MIN_READS_PER_HAPLOTYPE = 3
+_ONT_MIN_HAPLOTYPE_READ_RATIO = 0.0
+
 sys.path.insert(0, str(REPO_ROOT / "input"))
 from fastq import CandidateRead  # noqa: E402
 
@@ -563,6 +652,34 @@ def _em_mixture_log_likelihood(ll_sub: np.ndarray) -> tuple[float, np.ndarray]:
     return final_ll, weights
 
 
+def _hard_read_counts(ll_sub: np.ndarray, weights: np.ndarray) -> np.ndarray:
+    """Per-component read counts implied by one combo's own converged EM
+    weights -- a hard argmax over each read's `ll_sub + log(weights)` row
+    (the same winner-takes-all reduction stages/consensus.py's real
+    post-alignment `assign_reads_to_haplotypes()` performs downstream, used
+    here as a cheap proxy with no new alignment work: the EM run this needs
+    already happened). Module docstring on `_ONT_MIN_READS_PER_HAPLOTYPE`."""
+    log_weighted = ll_sub + np.log(weights)[None, :]
+    hard = np.argmax(log_weighted, axis=1)
+    return np.bincount(hard, minlength=ll_sub.shape[1])
+
+
+def _passes_read_count_floor(
+    counts: np.ndarray, min_reads_per_haplotype: int, min_haplotype_read_ratio: float,
+) -> bool:
+    """True iff every component's implied hard read count clears both the
+    absolute floor and the min/max ratio floor -- module docstring on
+    `_ONT_MIN_READS_PER_HAPLOTYPE`. `min_reads_per_haplotype=0` and
+    `min_haplotype_read_ratio=0.0` (select_template_set()'s own defaults)
+    make this always True, i.e. a no-op for any caller that doesn't opt in."""
+    if int(counts.min()) < min_reads_per_haplotype:
+        return False
+    max_count = int(counts.max())
+    if max_count > 0 and counts.min() / max_count < min_haplotype_read_ratio:
+        return False
+    return True
+
+
 # Module-level, set once per worker process by _init_combo_worker (the
 # ProcessPoolExecutor initializer) rather than re-pickled on every task --
 # log_likelihoods is the one thing every combination scores against, so
@@ -570,19 +687,32 @@ def _em_mixture_log_likelihood(ll_sub: np.ndarray) -> tuple[float, np.ndarray]:
 # parallelising the outer loop worthwhile instead of IPC-bound.
 _worker_log_likelihoods: np.ndarray | None = None
 _worker_col_index: dict[str, int] | None = None
+_worker_min_reads_per_haplotype: int = 0
+_worker_min_haplotype_read_ratio: float = 0.0
 
 
-def _init_combo_worker(log_likelihoods: np.ndarray, col_index: dict[str, int]) -> None:
+def _init_combo_worker(
+    log_likelihoods: np.ndarray, col_index: dict[str, int],
+    min_reads_per_haplotype: int = 0, min_haplotype_read_ratio: float = 0.0,
+) -> None:
     global _worker_log_likelihoods, _worker_col_index
+    global _worker_min_reads_per_haplotype, _worker_min_haplotype_read_ratio
     _worker_log_likelihoods = log_likelihoods
     _worker_col_index = col_index
+    _worker_min_reads_per_haplotype = min_reads_per_haplotype
+    _worker_min_haplotype_read_ratio = min_haplotype_read_ratio
 
 
-def _score_combo(combo: tuple[str, ...]) -> tuple[float, tuple[str, ...], np.ndarray]:
+def _score_combo(combo: tuple[str, ...]) -> tuple[float, tuple[str, ...], np.ndarray, bool]:
     assert _worker_log_likelihoods is not None and _worker_col_index is not None
     cols = [_worker_col_index[a] for a in combo]
-    set_ll, set_weights = _em_mixture_log_likelihood(_worker_log_likelihoods[:, cols])
-    return set_ll, combo, set_weights
+    ll_sub = _worker_log_likelihoods[:, cols]
+    set_ll, set_weights = _em_mixture_log_likelihood(ll_sub)
+    eligible = _passes_read_count_floor(
+        _hard_read_counts(ll_sub, set_weights),
+        _worker_min_reads_per_haplotype, _worker_min_haplotype_read_ratio,
+    )
+    return set_ll, combo, set_weights, eligible
 
 
 @dataclass(frozen=True)
@@ -610,6 +740,24 @@ class TemplateCall:
     candidates: tuple[str, ...]
 
 
+def _single_allele_call(
+    gene: str, cn: int, candidates: tuple[str, ...],
+    best_single_ll: float, best_single_allele: str,
+) -> TemplateCall:
+    """Shared shape for every "collapse to one distinct allele, `cn`
+    preserved" return path in select_template_set() below -- the
+    too-few-candidates fallback and the (new) all-combos-disqualified-by-
+    the-read-count-floor fallback both produce exactly this."""
+    return TemplateCall(
+        gene=gene, cn=cn, alleles=(best_single_allele,),
+        weights=(1.0,), log_likelihood=best_single_ll,
+        n_candidates=len(candidates), lrt_statistic=0.0,
+        single_allele_log_likelihood=best_single_ll,
+        single_allele=best_single_allele,
+        candidates=candidates,
+    )
+
+
 def select_template_set(
     gene: str,
     candidates: tuple[str, ...],
@@ -617,6 +765,8 @@ def select_template_set(
     cn: int,
     *,
     n_threads: int = 1,
+    min_reads_per_haplotype: int = 0,
+    min_haplotype_read_ratio: float = 0.0,
 ) -> TemplateCall:
     """Select the best-scoring template set of size `cn` (DESIGN.md S2a)
     from `candidates`, given a precomputed (n_reads, len(candidates))
@@ -625,6 +775,14 @@ def select_template_set(
     opinion on which scorer produced it). Also returns the LRT statistic
     against the single-allele (all-copies-identical) baseline that replaces
     FuFiHLA's 4x-ratio homozygosity rule.
+
+    `min_reads_per_haplotype`/`min_haplotype_read_ratio` (module docstring
+    on `_ONT_MIN_READS_PER_HAPLOTYPE`): disqualify a candidate combo from
+    ever winning the argmax search below if its own EM-implied hard read
+    split fails either floor. Disabled by default (0 / 0.0) -- every
+    existing caller keeps its exact prior behaviour unless it opts in;
+    select_template_set_ont_r10() does, select_template_set_flat() (the
+    frozen DESIGN.md S6 HiFi milestone-1 path) does not.
 
     Determinism (invariant 9): candidates must already be sorted (both
     scorers above produce them via candidate_alleles(), which sorts); ties
@@ -641,13 +799,31 @@ def select_template_set(
     (not context_log_likelihoods()'s per-cell scoring, a separate,
     still-sequential cost) the one worth spreading across processes rather
     than threads (the EM/logsumexp work is real CPU, GIL-bound).
+
+    `0 < len(candidates) < cn` (real HG-benchmark HLA-K/HLA-U finding,
+    development notes 2026-09-10 session): a genuinely homozygous sample can have
+    only one real candidate allele with read support at all -- there is
+    nothing for `itertools.combinations(candidates, cn)` to search, since a
+    combination can't repeat one element. This is not a failure requiring
+    a raise; it is exactly the same "real cn copies, one distinct allele"
+    shape `pipeline.py`'s `_collapse_to_single_allele()` already reports
+    for the *post-search* case (LRT/read-ratio collapse) -- handled here
+    the same way, `cn` preserved on the returned `TemplateCall`, only the
+    distinct-allele count collapses. `lrt_statistic=0.0` (the same sentinel
+    the `cn==1` baseline below already uses): with only one real candidate,
+    there is no second allele to test heterozygosity against, so "no
+    evidence for a second allele" is not a meaningful statistic to report
+    as anything but zero. Only `len(candidates) == 0` (no read-supported
+    candidate at all) still raises -- that is a real recruitment failure,
+    not a homozygosity shape, and invariant "silent failure is worse than a
+    crash" says it must stay loud.
     """
     if cn < 1:
         raise ValueError(f"cn must be >= 1, got {cn} for gene {gene!r}")
-    if len(candidates) < cn:
+    if len(candidates) == 0:
         raise ValueError(
-            f"{gene}: only {len(candidates)} candidate allele(s) with read "
-            f"support, need >= cn={cn} to form a template set"
+            f"{gene}: no candidate allele(s) with read support at all "
+            f"(need >= cn={cn} to form a template set)"
         )
     if log_likelihoods.shape[1] != len(candidates):
         raise ValueError(
@@ -655,8 +831,9 @@ def select_template_set(
             f"expected {len(candidates)} (one per candidate)"
         )
 
-    # Single-allele baseline (also cn=1's own answer): every candidate
-    # scored alone, no mixture needed.
+    # Single-allele baseline (also cn=1's own answer, and the too-few-
+    # candidates fallback's own answer): every candidate scored alone, no
+    # mixture needed.
     single_scores = [
         (float(log_likelihoods[:, j].sum()), a) for j, a in enumerate(candidates)
     ]
@@ -664,15 +841,8 @@ def select_template_set(
         single_scores, key=lambda t: (t[0], t[1])
     )
 
-    if cn == 1:
-        return TemplateCall(
-            gene=gene, cn=1, alleles=(best_single_allele,),
-            weights=(1.0,), log_likelihood=best_single_ll,
-            n_candidates=len(candidates), lrt_statistic=0.0,
-            single_allele_log_likelihood=best_single_ll,
-            single_allele=best_single_allele,
-            candidates=candidates,
-        )
+    if cn == 1 or len(candidates) < cn:
+        return _single_allele_call(gene, cn, candidates, best_single_ll, best_single_allele)
 
     col_index = {a: j for j, a in enumerate(candidates)}
     combos = list(itertools.combinations(candidates, cn))
@@ -683,20 +853,35 @@ def select_template_set(
     if n_threads <= 1 or len(combos) < _MIN_COMBOS_FOR_PARALLEL:
         for combo in combos:
             cols = [col_index[a] for a in combo]
-            set_ll, set_weights = _em_mixture_log_likelihood(log_likelihoods[:, cols])
+            ll_sub = log_likelihoods[:, cols]
+            set_ll, set_weights = _em_mixture_log_likelihood(ll_sub)
+            if not _passes_read_count_floor(
+                _hard_read_counts(ll_sub, set_weights),
+                min_reads_per_haplotype, min_haplotype_read_ratio,
+            ):
+                continue
             if set_ll > best_ll:
                 best_ll, best_set, best_weights = set_ll, combo, set_weights
     else:
         chunksize = max(1, len(combos) // (n_threads * 4))
         with ProcessPoolExecutor(
             max_workers=n_threads, initializer=_init_combo_worker,
-            initargs=(log_likelihoods, col_index),
+            initargs=(log_likelihoods, col_index, min_reads_per_haplotype, min_haplotype_read_ratio),
         ) as pool:
-            for set_ll, combo, set_weights in pool.map(_score_combo, combos, chunksize=chunksize):
-                if set_ll > best_ll:
+            for set_ll, combo, set_weights, eligible in pool.map(_score_combo, combos, chunksize=chunksize):
+                if eligible and set_ll > best_ll:
                     best_ll, best_set, best_weights = set_ll, combo, set_weights
 
-    assert best_set is not None and best_weights is not None
+    if best_set is None:
+        # Every combo of size cn failed the read-count/ratio floor -- the
+        # same "real cn copies, one distinct allele" shape as the
+        # too-few-candidates branch above (module docstring): no evidence
+        # for cn genuinely distinct alleles survives, so collapse rather
+        # than crown a winner stages/pipeline.py's own downstream check
+        # would immediately reject anyway.
+        return _single_allele_call(gene, cn, candidates, best_single_ll, best_single_allele)
+
+    assert best_weights is not None
     lrt = 2.0 * (best_ll - best_single_ll)
     return TemplateCall(
         gene=gene, cn=cn, alleles=best_set,
@@ -731,6 +916,8 @@ def select_template_set_ont_r10(
     config: OntR10Config | None = None,
     n_threads: int = 1,
     minimap2_bin: str = "minimap2",
+    min_reads_per_haplotype: int = _ONT_MIN_READS_PER_HAPLOTYPE,
+    min_haplotype_read_ratio: float = _ONT_MIN_HAPLOTYPE_READ_RATIO,
 ) -> TemplateCall:
     """Stage 2 entry point for the shipped ONT R10 model (invariant 1) --
     wires candidate discovery, sequence loading, and the context-aware
@@ -772,7 +959,13 @@ def select_template_set_ont_r10(
     bounded the candidate count (<= ~50) -- `assign.realign_to_candidates()`
     densely re-aligns every read against every narrowed candidate up front
     (reads x <=50, cheaper than Stage 1's own full-pool sweep), and the
-    single resulting search runs entirely on accurate data."""
+    single resulting search runs entirely on accurate data.
+
+    `min_reads_per_haplotype`/`min_haplotype_read_ratio` default to
+    stages/pipeline.py's own already-validated values (module docstring on
+    `_ONT_MIN_READS_PER_HAPLOTYPE` in this module) and are forwarded to
+    select_template_set() to disqualify a combo from the search itself
+    rather than only catching it after the fact."""
     if config is None:
         config = load_ont_r10_config()
     candidates = narrow_candidates_by_mismatch_rate(matrix, candidate_alleles(matrix))
@@ -790,4 +983,8 @@ def select_template_set_ont_r10(
     ll = context_log_likelihoods(
         dense_matrix, dense_read_sequences, allele_sequences, candidates, config,
     )
-    return select_template_set(matrix.gene, candidates, ll, cn, n_threads=n_threads)
+    return select_template_set(
+        matrix.gene, candidates, ll, cn, n_threads=n_threads,
+        min_reads_per_haplotype=min_reads_per_haplotype,
+        min_haplotype_read_ratio=min_haplotype_read_ratio,
+    )

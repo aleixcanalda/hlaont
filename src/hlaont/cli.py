@@ -103,7 +103,7 @@ import shutil
 import subprocess
 import sys
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Callable
 
 import pysam
@@ -123,6 +123,12 @@ from chr17_control import compute_chr17_control_depth_from_bam  # noqa: E402
 from pipeline import run_sample, run_sample_phased  # noqa: E402
 from regions import RegionSet, derive_regions_from_header  # noqa: E402
 
+def is_remote_bam(bam: str) -> bool:
+    """True for an http(s):// --bam value (a URL kept as plain str, see the
+    --bam argparse help above) rather than a local path."""
+    return bam.startswith("http://") or bam.startswith("https://")
+
+
 BUILD_PY = REPO_ROOT / "resources" / "templates" / "build.py"
 ANCHORS_DIR = REPO_ROOT / "resources" / "anchors"
 PREPARE_CANDIDATES_PY = ANCHORS_DIR / "prepare_candidates.py"
@@ -132,7 +138,7 @@ CDHIT_CLUSTERED_DIR = ANCHORS_DIR / "build_staging" / "clustered"
 
 
 def _extract_bam_to_fastq(
-    sample_id: str, bam_path: Path, reference_path: Path | None, out_dir: Path,
+    sample_id: str, bam_path: Path | str, reference_path: Path | None, out_dir: Path,
     *, samtools_bin: str, n_threads: int, progress: Callable[[str], None] | None = None,
 ) -> tuple[Path, Path, RegionSet]:
     """Stage 0 (DESIGN.md S3.1): BAM/CRAM -> mini-BAM -> FASTQ, so the BAM
@@ -185,10 +191,15 @@ def _add_run_subparser(subparsers: argparse._SubParsersAction) -> None:
     ap.add_argument("--dorado-version", default=None, help="Recorded in qc.json only -- not read from the FASTQ itself")
     ap.add_argument("--reference-build-md5", default=None, help="Recorded in qc.json only -- not derived from --reference itself")
     ap.add_argument(
-        "--bam", type=Path, default=None,
+        "--bam", type=str, default=None,
         help="Aligned BAM/CRAM (DESIGN.md S3.1 Stage 0 extraction path), an alternative to the FASTQ "
              "positional. Requires --reference for a .cram input (CRAM cannot decode without it); "
-             "optional for a plain .bam. Indexed input required (.bai/.crai).",
+             "optional for a plain .bam. Indexed input required (.bai/.crai). May be an http(s):// "
+             "URL (e.g. a public S3 object) instead of a local path -- samtools/htslib range-request "
+             "the needed regions directly, no local download of the full file. Kept as a plain str "
+             "(not argparse's Path) specifically so a URL's '//' survives -- Path() silently collapses "
+             "it to a single '/', corrupting the scheme (2026-09-06, real need: a 214GB public "
+             "1000g-ont R9 BAM with no local copy wanted, see is_remote_bam() below).",
     )
     ap.add_argument(
         "--reference", type=Path, default=None,
@@ -357,14 +368,22 @@ def _update_anchors_command(args: argparse.Namespace) -> int:
 def _run_command(args: argparse.Namespace) -> int:
     if (args.fastq is None) == (args.bam is None):
         sys.exit("[hlaont] ERROR: exactly one of the FASTQ positional argument or --bam is required")
-    if args.bam is not None and args.reference is None and args.bam.suffix.lower() == ".cram":
+    # PurePosixPath, not Path, for the suffix check -- a remote --bam is a
+    # URL string (see is_remote_bam()/the --bam help), and plain Path()
+    # would collapse its "//" and corrupt the scheme; PurePosixPath never
+    # touches the filesystem so it's exactly as safe on a local path too.
+    if args.bam is not None and args.reference is None and PurePosixPath(args.bam).suffix.lower() == ".cram":
         sys.exit("[hlaont] ERROR: --reference is required for a .cram --bam input (CRAM cannot decode without it)")
     if args.phased and args.bam is None:
         sys.exit("[hlaont] ERROR: --phased requires --bam (DESIGN.md S10 -- phase tags are BAM/CRAM-only, the FASTQ path has none)")
 
     if args.fastq is not None and not args.fastq.exists():
         sys.exit(f"[hlaont] ERROR: {args.fastq} does not exist")
-    if args.bam is not None and not args.bam.exists():
+    # A remote --bam is checked by attempting the actual header read below
+    # (_extract_bam_to_fastq -> pysam.AlignmentFile) instead of a local
+    # Path.exists() -- there is no local-filesystem existence to check, and
+    # htslib's own connection error is the correct, non-misleading failure.
+    if args.bam is not None and not is_remote_bam(args.bam) and not Path(args.bam).exists():
         sys.exit(f"[hlaont] ERROR: {args.bam} does not exist")
     if args.reference is not None and not args.reference.exists():
         sys.exit(f"[hlaont] ERROR: {args.reference} does not exist")

@@ -267,11 +267,48 @@ def _low_qv_call(gene: str = "DRB4LIKE", haplotype_index: int = 1) -> HaplotypeC
     return HaplotypeCallResult(
         gene=gene, haplotype_index=haplotype_index, cn=1,
         called_allele=f"{gene}*01:new", proposed_name=f"{gene}*01:new",
-        taxonomy="novel:null", candidate_null=True,
+        taxonomy="novel:null", extension_allele=None, candidate_null=True,
         field_gq=(60.0, 60.0, 0.0, -0.0), ambiguity_set=(),
         n_reads_assigned=4, consensus_length=15346,
         mean_qv=5.0, min_qv=0, n_variants=37,
     )
+
+
+def _extension_partial_call(gene: str = "HLA-C", haplotype_index: int = 1) -> HaplotypeCallResult:
+    """Real HG03009/HLA-C*07:457 shape (2026-09-21): Stage 2/4 aligned
+    against the genomic template HLA-C*07:02:01:01 (called_allele), but
+    Stage 5's extension:partial gate found the consensus's CDS exactly
+    matches the real, partially-catalogued IPD allele HLA-C*07:457 instead."""
+    return HaplotypeCallResult(
+        gene=gene, haplotype_index=haplotype_index, cn=2,
+        called_allele=f"{gene}*07:02:01:01", proposed_name=f"{gene}*07:457:new",
+        taxonomy="extension:partial", extension_allele=f"{gene}*07:457",
+        candidate_null=False,
+        field_gq=(60.0, 12.0, 10.8, 2.5), ambiguity_set=(),
+        n_reads_assigned=22, consensus_length=4318,
+        mean_qv=60.0, min_qv=60, n_variants=1,
+    )
+
+
+def test_write_calls_tsv_extension_partial_shows_extension_allele_as_template(tmp_path):
+    """User-requested, 2026-09-21: an extension:partial call's
+    `template_allele` column must show the real matched partial allele
+    (`extension_allele`), not the genomic alignment template
+    (`called_allele`) -- `allele`/`taxonomy` are unaffected, same display-
+    only precedent as the assembly-extraction gtf_template_allele case."""
+    result, _ = _run(tmp_path)
+    call = _extension_partial_call()
+    result = dataclasses.replace(result, haplotype_calls=result.haplotype_calls + (call,))
+
+    out = tmp_path / "calls_extension_partial.tsv"
+    write_calls_tsv(result, out)
+    with open(out) as fh:
+        rows = list(csv.DictReader(fh, delimiter="\t"))
+
+    row = next(r for r in rows if r["gene"] == "HLA-C")
+    assert row["template_allele"] == "HLA-C*07:457"
+    assert row["allele"] == "HLA-C*07:457:new"
+    assert row["taxonomy"] == "extension:partial"
 
 
 def test_write_calls_tsv_excludes_low_mean_qv_row(tmp_path):

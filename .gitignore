@@ -18,3 +18,13 @@ __pycache__/
 *.egg-info/
 build/
 dist/
+
+# Scratch debugging/diagnostic scripts and real-data run artifacts
+# (referenced throughout the development notes) -- not for GitHub.
+.debug/
+
+# Stray sequencing data indexes should never land in the source tree.
+*.bam
+*.bam.bai
+*.cram
+*.cram.crai

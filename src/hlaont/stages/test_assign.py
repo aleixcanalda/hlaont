@@ -9,7 +9,14 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent))
-from assign import GeneAssignmentMatrix, build_gene_matrices, best_gene_per_read  # noqa: E402
+from assign import (  # noqa: E402
+    GeneAssignmentMatrix,
+    build_gene_matrices,
+    best_gene_per_read,
+    gene_allele_pool,
+    merge_matrices,
+    subset_matrix_by_read_ids,
+)
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "input"))
 from fastq import AnchorHit, CandidateRead  # noqa: E402
@@ -270,3 +277,67 @@ def test_assignment_is_deterministic_across_reruns(tmp_path):
     result_a = run()
     result_b = run()
     assert result_a == result_b
+
+
+def test_gene_allele_pool_returns_sorted_full_pool(tmp_path):
+    _fasta, meta = _write_pool(tmp_path)
+    assert gene_allele_pool("GENE1", meta) == ("GENE1*01:01", "GENE1*01:02")
+    assert gene_allele_pool("GENE3", meta) == ("GENE3*01:01",)
+    assert gene_allele_pool("NO_SUCH_GENE", meta) == ()
+
+
+def test_merge_matrices_reunites_disjoint_row_subsets(tmp_path):
+    fasta, meta = _write_pool(tmp_path)
+    reads = [
+        _read("r1", GENE1_A, genes=("GENE1",)),
+        _read("r2", GENE1_B, genes=("GENE1",)),
+        _read("r3", GENE1_A, genes=("GENE1",)),
+    ]
+    full = build_gene_matrices(reads, pool_fasta=fasta, pool_meta=meta, n_threads=2)["GENE1"]
+
+    part_a = subset_matrix_by_read_ids(full, {"r1", "r3"})
+    part_b = subset_matrix_by_read_ids(full, {"r2"})
+    merged = merge_matrices(part_a, part_b)
+
+    assert merged.gene == full.gene
+    assert merged.allele_ids == full.allele_ids
+    assert merged.read_ids == full.read_ids  # sorted union == original row set
+    for rid in full.read_ids:
+        i_full = full.read_ids.index(rid)
+        i_merged = merged.read_ids.index(rid)
+        assert merged.matches[i_merged, :].tolist() == full.matches[i_full, :].tolist()
+        assert merged.aln_block_len[i_merged, :].tolist() == full.aln_block_len[i_full, :].tolist()
+        assert merged.nm[i_merged, :].tolist() == full.nm[i_full, :].tolist()
+    # Spans survive the merge too, correctly reindexed.
+    for (i_full, j), span in full.spans.items():
+        rid = full.read_ids[i_full]
+        i_merged = merged.read_ids.index(rid)
+        assert merged.spans[(i_merged, j)] == span
+
+
+def test_merge_matrices_rejects_gene_mismatch(tmp_path):
+    fasta, meta = _write_pool(tmp_path)
+    reads = [_read("r1", GENE1_A, genes=("GENE1",))]
+    a = build_gene_matrices(reads, pool_fasta=fasta, pool_meta=meta, n_threads=2)["GENE1"]
+    b = GeneAssignmentMatrix(
+        gene="GENE_OTHER", read_ids=("r2",), allele_ids=a.allele_ids,
+        matches=np.zeros((1, len(a.allele_ids)), dtype=np.int32),
+        aln_block_len=np.zeros((1, len(a.allele_ids)), dtype=np.int32),
+        nm=np.zeros((1, len(a.allele_ids)), dtype=np.int32),
+    )
+    try:
+        merge_matrices(a, b)
+        assert False, "expected ValueError"
+    except ValueError as e:
+        assert "gene mismatch" in str(e)
+
+
+def test_merge_matrices_rejects_overlapping_read_ids(tmp_path):
+    fasta, meta = _write_pool(tmp_path)
+    reads = [_read("r1", GENE1_A, genes=("GENE1",))]
+    full = build_gene_matrices(reads, pool_fasta=fasta, pool_meta=meta, n_threads=2)["GENE1"]
+    try:
+        merge_matrices(full, full)
+        assert False, "expected ValueError"
+    except ValueError as e:
+        assert "present in" in str(e)

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from sources import cds_nucleotide_sequence, parse_ipd_dat
+from sources import cds_exon_numbers, cds_nucleotide_sequence, parse_ipd_dat
 
 _HEADER = """\
 ID   HLA99999; SV 1; standard; DNA; HUM; {length} BP.
@@ -49,6 +49,23 @@ FT   UTR             1..49
 FT   exon            50..349
 FT                   /number="1"
 FT   UTR             350..400
+"""
+
+# Real-shaped partial (exon-subset) submission -- HLA-C*07:457's own IPD
+# record (HLA14025) is exactly this: join(<1..73,74..150) covering only
+# exons 2-3, no exon 1/introns/UTRs at all, /codon_start offset mid-codon
+# from the truncated 5' end, and the literal /partial qualifier that
+# _handle_ft_line() keys off of.
+_PARTIAL_FT = """\
+FT   source          1..150
+FT   CDS             join(<1..73,74..150)
+FT                   /codon_start=3
+FT                   /partial
+FT                   /gene="HLA-TEST"
+FT   exon            1..73
+FT                   /number="2"
+FT   exon            74..150
+FT                   /number="3"
 """
 
 
@@ -112,3 +129,55 @@ def test_require_genomic_false_still_parses_gene_model(tmp_path: Path) -> None:
     recs = list(parse_ipd_dat(path, {"HLA-TEST"}, require_genomic=False))
     assert len(recs) == 1
     assert recs[0].gene_model is not None
+
+
+def test_genomic_record_partial_flag_is_false(tmp_path: Path) -> None:
+    path = _write_record(tmp_path, "HLA-TEST*01:01", _MULTI_EXON_FT, 1000)
+    recs = list(parse_ipd_dat(path, {"HLA-TEST"}, require_genomic=True))
+    assert recs[0].partial is False
+
+
+def test_partial_record_dropped_by_default(tmp_path: Path) -> None:
+    # drop_partial defaults True (real template/anchor pool use) -- a
+    # genuinely truncated CDS (HLA-C*07:457's own shape) must never enter
+    # either pool, regardless of require_genomic.
+    path = _write_record(tmp_path, "HLA-TEST*07:457", _PARTIAL_FT, 150)
+    assert list(parse_ipd_dat(path, {"HLA-TEST"}, require_genomic=False)) == []
+
+
+def test_partial_record_kept_with_drop_partial_false(tmp_path: Path) -> None:
+    # Only resources/templates/build.py's CDS-catalogue pass sets this.
+    path = _write_record(tmp_path, "HLA-TEST*07:457", _PARTIAL_FT, 150)
+    recs = list(parse_ipd_dat(path, {"HLA-TEST"}, require_genomic=False, drop_partial=False))
+    assert len(recs) == 1
+    rec = recs[0]
+    assert rec.partial is True
+    assert rec.gene_model is not None
+    assert rec.gene_model.cds_exons == ((1, 73), (74, 150))
+    assert rec.gene_model.exons == ((2, 1, 73), (3, 74, 150))
+
+
+def test_cds_exon_numbers_resolves_from_numbered_exons(tmp_path: Path) -> None:
+    path = _write_record(tmp_path, "HLA-TEST*01:01", _MULTI_EXON_FT, 1000)
+    recs = list(parse_ipd_dat(path, {"HLA-TEST"}, require_genomic=True))
+    gm = recs[0].gene_model
+    assert gm is not None
+    assert cds_exon_numbers(gm) == [1, 2, 3]
+
+
+def test_cds_exon_numbers_partial_record(tmp_path: Path) -> None:
+    path = _write_record(tmp_path, "HLA-TEST*07:457", _PARTIAL_FT, 150)
+    recs = list(parse_ipd_dat(path, {"HLA-TEST"}, require_genomic=False, drop_partial=False))
+    gm = recs[0].gene_model
+    assert gm is not None
+    assert cds_exon_numbers(gm) == [2, 3]
+
+
+def test_cds_exon_numbers_none_when_unresolvable(tmp_path: Path) -> None:
+    # An exon feature present with no /number qualifier -- must not guess.
+    ft = _SINGLE_EXON_FT.replace('                   /number="1"\n', "")
+    path = _write_record(tmp_path, "HLA-TEST*01:02", ft, 400)
+    recs = list(parse_ipd_dat(path, {"HLA-TEST"}, require_genomic=False))
+    gm = recs[0].gene_model
+    assert gm is not None
+    assert cds_exon_numbers(gm) is None

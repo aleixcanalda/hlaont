@@ -61,6 +61,28 @@ def cds_nucleotide_sequence(sequence: str, gene_model: GeneModel) -> str:
     return "".join(sequence[s - 1:e] for s, e in gene_model.cds_exons)
 
 
+def cds_exon_numbers(gene_model: GeneModel) -> list[int] | None:
+    """The IMGT `/number` for each of `gene_model.cds_exons`'s segments, in
+    order, resolved by containment against `gene_model.exons`'s own
+    numbered FT ranges. None if any segment can't be resolved (an exon
+    feature with no `/number` qualifier) -- the partial-CDS extension-
+    matching gate (stages/novelty.py's `_partial_extension_match()`) must
+    know exactly which exon numbers a fragment covers before treating it as
+    confirming anything; an unresolvable segment means that gate silently
+    doesn't apply to this record, not a guessed coverage."""
+    numbers: list[int] = []
+    for cs, ce in gene_model.cds_exons:
+        match = None
+        for num, es, ee in gene_model.exons:
+            if num is not None and es <= cs and ce <= ee:
+                match = num
+                break
+        if match is None:
+            return None
+        numbers.append(match)
+    return numbers
+
+
 @dataclass(frozen=True)
 class TemplateRecord:
     gene: str
@@ -72,6 +94,14 @@ class TemplateRecord:
     fields: int
     source: str
     source_version: str
+    # True iff IPD's own FT table marks this record `/partial` (a genuinely
+    # truncated CDS, e.g. exon 2-3 only, not just "not genomic") -- dropped
+    # from every pool/catalogue by default (drop_partial=True below); a
+    # dedicated require_genomic=False, drop_partial=False parse.py pass
+    # (resources/templates/build.py) keeps these specifically to feed
+    # stages/novelty.py's partial-CDS extension-matching gate, which needs
+    # to see them, never to feed the actual template/alignment pool.
+    partial: bool = False
     gene_model: GeneModel | None = field(default=None)
     # Immuannot's own nearest-known-IPD-match guess for this exact sequence
     # (assembly_sources.py's AssemblyGTFSource only -- None for every IPD-
@@ -223,8 +253,10 @@ def _build_gene_model(cur: dict) -> GeneModel | None:
 
 
 def _flush(cur: dict | None, genomic_genes: set[str], source_version: str,
-           require_genomic: bool = True) -> TemplateRecord | None:
-    if cur is None or cur["gene"] is None or cur["partial"]:
+           require_genomic: bool = True, drop_partial: bool = True) -> TemplateRecord | None:
+    if cur is None or cur["gene"] is None:
+        return None
+    if drop_partial and cur["partial"]:
         return None
     if cur["gene"] not in genomic_genes:
         return None
@@ -244,23 +276,30 @@ def _flush(cur: dict | None, genomic_genes: set[str], source_version: str,
         fields=cur["fields"],
         source="IPD-IMGT/HLA",
         source_version=source_version,
+        partial=cur["partial"],
         gene_model=_build_gene_model(cur),
     )
 
 
 def parse_ipd_dat(dat_path: Path, genomic_genes: set[str],
-                   require_genomic: bool = True) -> Iterator[TemplateRecord]:
-    """Stream hla.dat, yielding one TemplateRecord per non-partial allele whose
-    gene is in genomic_genes.
+                   require_genomic: bool = True, drop_partial: bool = True) -> Iterator[TemplateRecord]:
+    """Stream hla.dat, yielding one TemplateRecord per allele whose gene is
+    in genomic_genes.
 
     require_genomic=True (default, template pool use): additionally require
     "genomic" -- both UTRs plus at least one intron present (DESIGN.md S2b).
     Same criterion as ipd_audit.py, not FuFiHLA's coarser `grep -v partial` on
     the description line.
 
-    require_genomic=False (anchor decoy use): any non-partial record, since a
-    decoy anchor only needs to represent a paralog's sequence well enough to
-    catch stray reads -- it is never typed against.
+    require_genomic=False (anchor decoy use, and the CDS-catalogue build):
+    any record, since a decoy anchor only needs to represent a paralog's
+    sequence well enough to catch stray reads -- it is never typed against.
+
+    drop_partial=True (default): drop records IPD's own FT table marks
+    `/partial` (a genuinely truncated CDS, not just non-genomic). Only
+    resources/templates/build.py's CDS-catalogue pass sets this False --
+    stages/novelty.py's partial-CDS extension-matching gate needs to see
+    these specifically; the real template/alignment pool never does.
     """
     cur: dict | None = None
     in_seq = False
@@ -269,7 +308,7 @@ def parse_ipd_dat(dat_path: Path, genomic_genes: set[str],
     with open(dat_path, "r", errors="replace") as fh:
         for line in fh:
             if line.startswith("ID   "):
-                rec = _flush(cur, genomic_genes, source_version, require_genomic)
+                rec = _flush(cur, genomic_genes, source_version, require_genomic, drop_partial)
                 if rec is not None:
                     yield rec
                 m = _ID_RE.match(line)
@@ -324,7 +363,7 @@ def parse_ipd_dat(dat_path: Path, genomic_genes: set[str],
                 cleaned = re.sub(r"[\s\d]", "", line).upper()
                 cur["seq_lines"].append(cleaned)
 
-    rec = _flush(cur, genomic_genes, source_version, require_genomic)
+    rec = _flush(cur, genomic_genes, source_version, require_genomic, drop_partial)
     if rec is not None:
         yield rec
 
@@ -335,12 +374,14 @@ class IPDSource:
     name = "IPD-IMGT/HLA"
 
     def __init__(self, genomic_genes: set[str], raw_dir: Path, tag: str = IPD_DEFAULT_TAG,
-                 dat_path: Path | None = None, require_genomic: bool = True):
+                 dat_path: Path | None = None, require_genomic: bool = True,
+                 drop_partial: bool = True):
         self.genomic_genes = genomic_genes
         self.tag = tag
         self.raw_dir = raw_dir
         self._dat_path = dat_path
         self.require_genomic = require_genomic
+        self.drop_partial = drop_partial
         self.version = IPD_DEFAULT_VERSION if tag == IPD_DEFAULT_TAG else tag
         self.dat_sha256: str | None = None
 
@@ -356,4 +397,4 @@ class IPDSource:
             for chunk in iter(lambda: fh.read(1 << 20), b""):
                 h.update(chunk)
         self.dat_sha256 = h.hexdigest()
-        yield from parse_ipd_dat(dat_path, self.genomic_genes, self.require_genomic)
+        yield from parse_ipd_dat(dat_path, self.genomic_genes, self.require_genomic, self.drop_partial)

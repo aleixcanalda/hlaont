@@ -206,6 +206,9 @@ from assign import (  # noqa: E402
     GeneAssignmentMatrix,
     build_gene_matrices,
     classical_matrices_for_reads,
+    gene_allele_pool,
+    merge_matrices,
+    realign_to_candidates,
     subset_matrix_by_read_ids,
 )
 from cn import (  # noqa: E402
@@ -247,6 +250,7 @@ from consensus import (  # noqa: E402
 from genotype import (  # noqa: E402
     OntR10Config,
     TemplateCall,
+    load_allele_sequences,
     load_ont_r10_config,
     select_template_set_ont_r10,
 )
@@ -266,6 +270,7 @@ class HaplotypeCallResult:
     called_allele: str
     proposed_name: str
     taxonomy: str
+    extension_allele: str | None
     candidate_null: bool
     field_gq: tuple[float, ...]
     ambiguity_set: tuple[str, ...]
@@ -464,6 +469,91 @@ def _resolve_drb345_mutual_exclusivity(
     return out
 
 
+_MIN_MISSING_READS_TO_RESCUE = 10
+_MIN_MISSING_FRACTION_TO_RESCUE = 0.15
+
+
+def rescue_stolen_reads(
+    gene: str,
+    matrix: GeneAssignmentMatrix,
+    reads: Sequence[CandidateRead],
+    *,
+    pool_fasta: Path = DEFAULT_POOL_FASTA,
+    pool_meta: Path = DEFAULT_POOL_META,
+    n_threads: int = 1,
+    minimap2_bin: str = "minimap2",
+    min_missing_reads: int = _MIN_MISSING_READS_TO_RESCUE,
+    min_missing_fraction: float = _MIN_MISSING_FRACTION_TO_RESCUE,
+) -> GeneAssignmentMatrix:
+    """**Not currently called from `_run_sample_core()` (reverted 2026-09-10,
+    see the development notes' HANDOFF for that session).** Confirmed on real H2009 data
+    to not fix the DQB1 case it was built for and to corrupt DRB4/MICB
+    (missing `max_read_mismatch_rate` gate on the rescued reads lets
+    cross-mapped noise into a thin matrix). Left defined, not deleted, for a
+    future session to either gate-and-revalidate or replace once DQB1's real
+    mechanism is understood -- do not re-wire this without addressing both.
+
+    Recovers a gene's own Stage-0-sieved reads that Stage 1's sparse
+    (`stage1_n_best=1`) matrix lost to a *different* gene, a real H2009
+    (CASTLE) HLA-DQB1 finding (development notes 2026-09-10 session): `n_best=1`
+    reports only each read's single globally-best hit across the *entire*
+    pool, not per-gene -- a read Stage 0 anchor-sieved to `gene` can still
+    lose that one slot to a different gene's allele if it happens to score
+    marginally higher in raw minimap2 match count, even when the read is
+    genuinely `gene`'s. Confirmed directly: DQB1 had 163 reads sieved to it
+    but only 50 rows in its own Stage 1 matrix -- 113 reads "stolen" by
+    other genes' alleles -- and the resulting matrix's own EM search over
+    just those 50 reads picked a spurious, 2-read-backed wrong second
+    allele instead of the true, well-supported one (confirmed present
+    among the 113 stolen reads via a dense, gene-restricted realignment).
+
+    This is the opposite failure shape from the one `n_best=1` was chosen
+    to fix (DRB1/HLA-A/MICA/MICB: one gene's matrix *flooded* with
+    cross-gene paralog noise at a high n_best) -- raising `n_best` back up
+    globally reopens that flooding (real HG00097/H2009 regressions
+    confirmed at n_best=512: HLA-DMB and HLA-N both lost a previously-exact
+    call). This function instead targets only the specific gene shown to
+    be losing reads, leaving `n_best=1`'s global behaviour for every other
+    gene untouched: if `gene`'s own Stage-0-sieved read count exceeds what
+    made it into `matrix` by at least `min_missing_reads` *and*
+    `min_missing_fraction` of the sieved total, the missing reads are
+    densely realigned against `gene`'s own full allele pool alone (cheap --
+    a handful to a few hundred reads against one gene's pool, not the
+    whole ~24,000-template pool `build_gene_matrices()` aligns against) and
+    merged back into `matrix`. Below either threshold, `matrix` is
+    returned unchanged -- most genes are not expected to need this, and
+    paying for a dense per-gene realignment on every gene regardless would
+    be real, mostly-wasted cost.
+
+    Both thresholds are provisional (invariant 11), chosen with headroom
+    over DQB1's own real gap (113 missing / 163 sieved = 69%) rather than
+    fitted -- not yet validated beyond the one real sample that motivated
+    this function; a full real-benchmark check (module docstring's own
+    "TAP1/TAP2 three-reverted-attempts" precedent for this class of fix)
+    is still needed before trusting this broadly."""
+    sieved_ids = {r.read_id for r in reads if gene in {h.gene for h in r.hits}}
+    missing_ids = sieved_ids - set(matrix.read_ids)
+    if not missing_ids or len(sieved_ids) == 0:
+        return matrix
+    if (
+        len(missing_ids) < min_missing_reads
+        or len(missing_ids) / len(sieved_ids) < min_missing_fraction
+    ):
+        return matrix
+
+    gene_alleles = gene_allele_pool(gene, pool_meta)
+    if not gene_alleles:
+        return matrix
+    missing_reads = [r for r in reads if r.read_id in missing_ids]
+    allele_sequences = load_allele_sequences(pool_fasta, gene_alleles)
+    rescued = realign_to_candidates(
+        gene, missing_reads, allele_sequences, n_threads=n_threads, minimap2_bin=minimap2_bin,
+    )
+    if not rescued.read_ids:
+        return matrix
+    return merge_matrices(matrix, rescued)
+
+
 def _collapse_to_single_allele(call: TemplateCall) -> TemplateCall:
     """Manufacture a single-allele TemplateCall from `call`'s own
     single-allele baseline (already computed by Stage 2's search regardless
@@ -505,6 +595,7 @@ def _build_haplotype_call_result(
         called_allele=typing_call.called_allele,
         proposed_name=novelty_call.proposed_name,
         taxonomy=novelty_call.taxonomy,
+        extension_allele=novelty_call.extension_allele,
         candidate_null=novelty_call.candidate_null,
         field_gq=typing_call.field_gq,
         ambiguity_set=typing_call.ambiguity_set,
@@ -542,6 +633,8 @@ def _run_sample_core(
     min_heterozygous_lrt: float = 10.0,
     min_reads_per_haplotype: int = 3,
     min_haplotype_read_ratio: float = 0.1,
+    pre_search_min_reads_per_haplotype: int = 3,
+    pre_search_min_haplotype_read_ratio: float = 0.0,
     max_read_mismatch_rate: float = 0.06,
     stage1_n_best: int = 1,
     n_threads: int = 4,
@@ -597,6 +690,39 @@ def _run_sample_core(
     given. `None` (the default) means "compute it for real" via the
     whole-FASTQ pass -- callers with no cheaper real alignment to read it
     from must not fake one.
+
+    `pre_search_min_reads_per_haplotype`/`pre_search_min_haplotype_read_ratio`
+    (added 2026-09-10, real H2009 CASTLE HLA-DQB1 finding -- genotype.py's
+    module docstring on `_ONT_MIN_READS_PER_HAPLOTYPE`): forwarded to
+    `select_template_set_ont_r10()` to disqualify a candidate combo from
+    ever winning Stage 2's argmax search if its own EM-implied hard read
+    split fails either floor. Deliberately a *separate* parameter pair from
+    `min_reads_per_haplotype`/`min_haplotype_read_ratio` just below -- that
+    pair gates a different, pre-existing (2026-07-30) mechanism, the *post*-
+    consensus collapse-to-homozygous check a few hundred lines down, which a
+    real MICA case specifically motivated raising its own floor to 3 for.
+    Reusing one parameter for both would silently disable that unrelated,
+    already-validated check whenever a caller wants to ablate just this
+    newer pre-search one (confirmed needed: an early real 6-sample
+    regression check for this fix did exactly that by accident and produced
+    a confounded result -- MICA looked "fixed" only because its own,
+    unrelated floor was off too, not because of anything this new
+    mechanism did).
+
+    `pre_search_min_haplotype_read_ratio` default revised 0.1 -> 0.2 -> 0.0
+    (retired) across the 2026-09-10/11 sessions -- genotype.py's own module
+    docstring on `_ONT_MIN_HAPLOTYPE_READ_RATIO` has the full real-data
+    story: 0.2 fixed three real spurious picks 0.1 let through but broke
+    three different real genuine picks in the same benchmark, because the
+    pre-search floor's read split is an EM-implied *proxy*, not the real
+    post-alignment count, and that proxy under-estimates how skewed a
+    real correct pair's split actually turns out to be. The ratio question
+    now lives entirely in `min_haplotype_read_ratio` below (the pre-existing
+    *post*-consensus check, still 0.1, which acts on the real count) --
+    `pre_search_min_haplotype_read_ratio` stays as a parameter (still
+    forwarded to the pre-search floor) purely so a caller can restore a
+    nonzero value if a future case needs it, but 0.0 is a no-op by
+    construction (`_passes_read_count_floor`'s own module docstring).
     """
     if ont_config is None:
         ont_config = load_ont_r10_config()
@@ -765,13 +891,14 @@ def _run_sample_core(
                 f"(DESIGN.md S2c HLA-Y warning)",
             ))
             continue
-
         if progress:
             progress(f"Stage 2-3: {gene} template selection + consensus (cn={cn_int})")
         try:
             call = select_template_set_ont_r10(
                 matrix, reads, cn=cn_int, pool_fasta=pool_fasta,
                 config=ont_config, n_threads=n_threads, minimap2_bin=minimap2_bin,
+                min_reads_per_haplotype=pre_search_min_reads_per_haplotype,
+                min_haplotype_read_ratio=pre_search_min_haplotype_read_ratio,
             )
             if call.cn > 1 and call.lrt_statistic < min_heterozygous_lrt:
                 # Weak evidence for `cn` genuinely distinct alleles -- collapse
@@ -853,7 +980,8 @@ def _run_sample_core(
         typing_call = typing_calls[key]
         try:
             novelty_call = classify(
-                typing_call, hap.sequence, pool_fasta=pool_fasta, pool_meta=pool_meta,
+                typing_call, hap.sequence, consensus_variants=hap.variants,
+                pool_fasta=pool_fasta, pool_meta=pool_meta,
                 models_path=models_path, cds_catalogue_path=cds_catalogue_path,
             )
         except ValueError as e:
@@ -907,6 +1035,8 @@ def run_sample(
     min_heterozygous_lrt: float = 10.0,
     min_reads_per_haplotype: int = 3,
     min_haplotype_read_ratio: float = 0.1,
+    pre_search_min_reads_per_haplotype: int = 3,
+    pre_search_min_haplotype_read_ratio: float = 0.0,
     max_read_mismatch_rate: float = 0.06,
     stage1_n_best: int = 1,
     n_threads: int = 4,
@@ -931,6 +1061,8 @@ def run_sample(
         cn_round=cn_round, max_cn=max_cn, min_heterozygous_lrt=min_heterozygous_lrt,
         min_reads_per_haplotype=min_reads_per_haplotype,
         min_haplotype_read_ratio=min_haplotype_read_ratio,
+        pre_search_min_reads_per_haplotype=pre_search_min_reads_per_haplotype,
+        pre_search_min_haplotype_read_ratio=pre_search_min_haplotype_read_ratio,
         max_read_mismatch_rate=max_read_mismatch_rate, stage1_n_best=stage1_n_best,
         n_threads=n_threads, minimap2_bin=minimap2_bin, samtools_bin=samtools_bin, progress=progress,
     )
@@ -1079,6 +1211,8 @@ def run_sample_phased(
     min_heterozygous_lrt: float = 10.0,
     min_reads_per_haplotype: int = 3,
     min_haplotype_read_ratio: float = 0.1,
+    pre_search_min_reads_per_haplotype: int = 3,
+    pre_search_min_haplotype_read_ratio: float = 0.0,
     max_read_mismatch_rate: float = 0.06,
     stage1_n_best: int = 1,
     min_phased_tagged_fraction: float = 0.5,
@@ -1235,6 +1369,8 @@ def run_sample_phased(
         cn_round=cn_round, max_cn=max_cn, min_heterozygous_lrt=min_heterozygous_lrt,
         min_reads_per_haplotype=min_reads_per_haplotype,
         min_haplotype_read_ratio=min_haplotype_read_ratio,
+        pre_search_min_reads_per_haplotype=pre_search_min_reads_per_haplotype,
+        pre_search_min_haplotype_read_ratio=pre_search_min_haplotype_read_ratio,
         max_read_mismatch_rate=max_read_mismatch_rate, stage1_n_best=stage1_n_best,
         n_threads=n_threads, minimap2_bin=minimap2_bin, samtools_bin=samtools_bin, progress=progress,
     )
@@ -1390,7 +1526,8 @@ def run_sample_phased(
         typing_call = phased_typing_calls[key]
         try:
             novelty_call = classify(
-                typing_call, hap.sequence, pool_fasta=pool_fasta, pool_meta=pool_meta,
+                typing_call, hap.sequence, consensus_variants=hap.variants,
+                pool_fasta=pool_fasta, pool_meta=pool_meta,
                 models_path=models_path, cds_catalogue_path=cds_catalogue_path,
             )
         except ValueError as e:

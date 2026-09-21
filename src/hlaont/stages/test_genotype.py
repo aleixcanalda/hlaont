@@ -151,10 +151,32 @@ def test_select_cn2_homozygous_sample_gives_small_lrt():
     assert call.lrt_statistic < 5.0
 
 
-def test_select_cn2_raises_if_fewer_than_cn_candidates():
+def test_select_cn2_falls_back_to_single_allele_if_only_one_candidate():
+    # Real HLA-K/HLA-U finding (development notes 2026-09-10 session): a genuinely
+    # homozygous sample can have only one real candidate allele with read
+    # support -- itertools.combinations(candidates, cn) has nothing to
+    # search (can't repeat one element), so this must fall back to the
+    # single-candidate answer, not raise. `cn` stays at the requested value
+    # (the real estimated copy number); only the distinct-allele count
+    # collapses to one, same shape `_collapse_to_single_allele()` already
+    # produces for the post-search LRT/read-ratio case.
     m = _matrix("G", ("A1",), ("r1",), {("r1", "A1"): (100, 100, 0)})
-    with pytest.raises(ValueError, match="candidate allele"):
-        select_template_set_flat(m, cn=2, error_model=_MODEL)
+    call = select_template_set_flat(m, cn=2, error_model=_MODEL)
+
+    assert call.cn == 2
+    assert call.alleles == ("A1",)
+    assert call.weights == (1.0,)
+    assert call.single_allele == "A1"
+    assert call.lrt_statistic == 0.0
+    assert call.n_candidates == 1
+
+
+def test_select_template_set_raises_if_zero_candidates():
+    # Distinct from the fallback above: zero read-supported candidates at
+    # all is a real recruitment failure (nothing to type), not a
+    # homozygosity shape, and must stay loud.
+    with pytest.raises(ValueError, match="no candidate allele"):
+        select_template_set("G", (), np.zeros((5, 0)), cn=2)
 
 
 def test_select_template_set_rejects_mismatched_log_likelihood_shape():
@@ -168,6 +190,120 @@ def test_select_template_set_is_deterministic():
     a = select_template_set_flat(m, cn=2, error_model=_MODEL)
     b = select_template_set_flat(m, cn=2, error_model=_MODEL)
     assert a == b
+
+
+def _outlier_pair_log_likelihoods() -> tuple[tuple[str, ...], np.ndarray]:
+    """Synthetic (20 reads x 3 candidates) log-likelihood matrix
+    reproducing the real H2009 CASTLE HLA-DQB1 mechanism (development notes
+    2026-09-10 session, verified against real numbers before this test was
+    written): A1/A2 are a true heterozygous pair whose per-read
+    discriminating power is small (most reads barely tell them apart), while
+    A3 is a spurious, unrelated candidate that only 2 reads support -- but
+    with an enormous per-read likelihood gap, since those 2 reads simply
+    don't belong to the A1/A2 family at all. Raw summed log-likelihood
+    favours (A1, A3) over the true (A1, A2) pair despite A3 having far fewer
+    supporting reads -- exactly the bug the read-count/ratio floor exists to
+    close."""
+    candidates = ("A1", "A2", "A3")
+    ll = np.zeros((20, 3))
+    ll[0:2] = [-50.0, -50.0, -1.0]  # 2 outlier reads: real signal is A3, not A1/A2
+    for i in range(2, 7):
+        ll[i] = [-1.0, -3.0, -1000.0]  # 5 reads, slightly favour A1
+    for i in range(7, 12):
+        ll[i] = [-3.0, -1.0, -1000.0]  # 5 reads, slightly favour A2
+    ll[12:20] = [-1.0, -1.0, -1000.0]  # 8 neutral reads
+    return candidates, ll
+
+
+def test_select_template_set_without_floor_reproduces_outlier_pair_bug():
+    # Documents the real bug this floor exists to fix: with the floor
+    # disabled (select_template_set()'s own default), raw total
+    # log-likelihood picks the 2-read-backed spurious pair over the true,
+    # broadly (if subtly) supported pair -- confirming the synthetic setup
+    # actually reproduces the failure mode before testing the fix below.
+    candidates, ll = _outlier_pair_log_likelihoods()
+    call = select_template_set("G", candidates, ll, cn=2)
+    assert call.alleles == ("A1", "A3")
+
+
+def test_select_template_set_read_count_floor_rejects_outlier_pair():
+    candidates, ll = _outlier_pair_log_likelihoods()
+    call = select_template_set(
+        "G", candidates, ll, cn=2,
+        min_reads_per_haplotype=3, min_haplotype_read_ratio=0.0,
+    )
+    assert call.alleles == ("A1", "A2")
+
+
+def test_select_template_set_read_count_ratio_floor_rejects_outlier_pair():
+    # Isolates the ratio floor from the absolute floor: 3 outlier reads
+    # (clears an absolute floor of 0, i.e. disabled here) but a 3-vs-17
+    # split fails a 0.2 ratio.
+    candidates = ("A1", "A2", "A3")
+    ll = np.zeros((20, 3))
+    ll[0:3] = [-50.0, -50.0, -1.0]
+    for i in range(3, 7):
+        ll[i] = [-1.0, -3.0, -1000.0]
+    for i in range(7, 11):
+        ll[i] = [-3.0, -1.0, -1000.0]
+    ll[11:20] = [-1.0, -1.0, -1000.0]
+    call = select_template_set(
+        "G", candidates, ll, cn=2,
+        min_reads_per_haplotype=0, min_haplotype_read_ratio=0.2,
+    )
+    assert call.alleles == ("A1", "A2")
+
+
+def test_select_template_set_read_count_floor_collapses_when_every_combo_fails():
+    # Every cn=2 combo fails the floor -> falls back to the single-allele
+    # shape (same as the too-few-candidates case above), not a crash or a
+    # disqualified-anyway pick.
+    candidates = ("A1", "A2")
+    ll = np.array([[-1.0, -50.0], [-1.0, -50.0], [-50.0, -1.0]])
+    call = select_template_set(
+        "G", candidates, ll, cn=2,
+        min_reads_per_haplotype=5, min_haplotype_read_ratio=0.0,
+    )
+    assert call.cn == 2
+    assert call.alleles == ("A1",)
+    assert call.weights == (1.0,)
+    assert call.lrt_statistic == 0.0
+
+
+def test_select_template_set_read_count_floor_parallel_matches_sequential():
+    # Same shape as test_select_template_set_parallel_matches_sequential
+    # above, but with the floor active -- confirms _score_combo's own
+    # eligibility check (the parallel path) agrees with the sequential
+    # loop's, not just the unfiltered case.
+    read_ids = tuple(f"r{i}" for i in range(20))
+    noise_alleles = tuple(f"N{i}" for i in range(25))
+    alleles = ("A1", "A2") + noise_alleles
+    cells: dict[tuple[str, str], tuple[int, int, int]] = {}
+    good, bad = (100, 100, 2), (70, 100, 180)
+    for i, r in enumerate(read_ids):
+        if i >= 10:
+            cells[(r, "A1")] = bad
+            cells[(r, "A2")] = good
+        else:
+            cells[(r, "A1")] = good
+            cells[(r, "A2")] = bad
+    for n_allele in noise_alleles:
+        cells[("r0", n_allele)] = (10, 100, 90)
+    m = _matrix("G", alleles, read_ids, cells)
+    candidates = candidate_alleles(m)
+    assert math.comb(len(candidates), 2) >= _MIN_COMBOS_FOR_PARALLEL
+
+    ll = read_log_likelihoods(m, _MODEL, columns=candidates)
+    sequential = select_template_set(
+        "G", candidates, ll, cn=2, n_threads=1,
+        min_reads_per_haplotype=3, min_haplotype_read_ratio=0.1,
+    )
+    parallel = select_template_set(
+        "G", candidates, ll, cn=2, n_threads=2,
+        min_reads_per_haplotype=3, min_haplotype_read_ratio=0.1,
+    )
+    assert parallel == sequential
+    assert parallel.alleles == ("A1", "A2")
 
 
 def test_narrow_candidates_keeps_close_drops_far():

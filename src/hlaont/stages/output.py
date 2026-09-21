@@ -107,6 +107,18 @@ def write_calls_tsv(
     used internally, and `allele`/`taxonomy` are computed exactly as
     before -- this only changes what this one column prints.
 
+    **`extension:partial` calls, added 2026-09-21, user-requested.** Same
+    display-swap idea, one step further: when Stage 5 classifies a
+    haplotype as `extension:partial` (stages/novelty.py's
+    `_partial_extension_match()` -- the consensus's CDS exactly matches a
+    *different* IPD allele than `called_allele`, one only ever catalogued
+    as a partial/exon-subset record, e.g. real HG03009/HLA-C*07:457), this
+    column shows that matched allele (`extension_allele`) instead of the
+    genomic template Stage 2/4 actually aligned/built consensus against.
+    `called_allele` itself, and everything Stage 3/4 computed from it, are
+    unchanged -- only this display column and (already, unrelated to this
+    change) `allele`/`taxonomy` reflect the partial match.
+
     **`haplotype_index` removed, 2026-08-27, user-requested.** This
     pipeline never phases reads -- Stage 2's per-haplotype split is an
     arbitrary assignment order out of template-set selection, not a real
@@ -261,8 +273,23 @@ def write_calls_tsv(
     with open(path, "w") as fh:
         fh.write("\t".join(cols) + "\n")
         for c in kept_calls:
-            display_template_allele = load_gtf_template_allele(c.called_allele, pool_meta) \
-                or c.called_allele
+            if c.taxonomy == "extension:partial" and c.extension_allele is not None:
+                # The real genomic template used to align/build consensus
+                # (c.called_allele) is Stage 2/4's own alignment anchor, not
+                # the actual known allele -- stages/novelty.py's
+                # extension:partial gate already confirmed the consensus's
+                # CDS exactly matches a *different*, real (if only
+                # partially-catalogued) IPD allele over its own covered
+                # range. Same display-swap precedent as the assembly-
+                # extraction gtf_template_allele case below: purely a
+                # display column, called_allele is still what every other
+                # stage used internally, and allele/taxonomy are computed
+                # exactly as before -- this only changes what this one
+                # column prints.
+                display_template_allele = c.extension_allele
+            else:
+                display_template_allele = load_gtf_template_allele(c.called_allele, pool_meta) \
+                    or c.called_allele
             row = [
                 c.gene, str(c.cn), display_template_allele, c.proposed_name,
                 c.taxonomy, str(len(c.field_gq)),

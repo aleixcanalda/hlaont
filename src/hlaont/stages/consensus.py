@@ -94,6 +94,15 @@ class ConsensusVariant:
     alt: str
     qv: float
     depth: int
+    # Reads whose own observation at this position disagreed with the
+    # winning call (2026-09-13, added for stages/novelty.py's read-support
+    # variant filter -- see that module's `_MIN_VARIANT_SUPPORT`). Distinct
+    # from `qv`: qv is the model-based P(wrong) that the project's own
+    # 2026-09-11/12 sessions found saturates at 60 regardless of real
+    # disagreement; `dissent` is the raw vote count `_qv_and_best` already
+    # has on hand while computing that saturating score, kept here instead
+    # of discarded.
+    dissent: int
 
 
 @dataclass(frozen=True)
@@ -170,14 +179,14 @@ def _qv_and_best(scores: dict[str, float], preferred_on_tie: str) -> tuple[str, 
 
 def _call_substitution_or_deletion(
     observations: list[tuple[str, float]], template_base: str
-) -> tuple[str, float, int]:
+) -> tuple[str, float, int, int]:
     """observations: list of (observed_base_or_'' -for-deletion, read_err).
-    Returns (consensus_state, qv, depth); consensus_state is a base or '-'.
-    5-state model (4 bases + deletion), 4 alternatives per state -- a
-    standard base-caller approximation, not a fitted substitution/deletion
-    balance (see module docstring)."""
+    Returns (consensus_state, qv, depth, dissent); consensus_state is a
+    base or '-'. 5-state model (4 bases + deletion), 4 alternatives per
+    state -- a standard base-caller approximation, not a fitted
+    substitution/deletion balance (see module docstring)."""
     if not observations:
-        return template_base, 0.0, 0
+        return template_base, 0.0, 0, 0
 
     states = _BASES + (_DELETION,)
     scores = {s: 0.0 for s in states}
@@ -189,26 +198,27 @@ def _call_substitution_or_deletion(
             scores[s] += log_match if s == obs_state else log_mismatch
 
     best, qv = _qv_and_best(scores, preferred_on_tie=template_base)
-    return best, qv, len(observations)
+    dissent = sum(1 for obs, _ in observations if (obs if obs else _DELETION) != best)
+    return best, qv, len(observations), dissent
 
 
 def _call_insertion(
     observations: list[tuple[str, float]]
-) -> tuple[str, float, int]:
+) -> tuple[str, float, int, int]:
     """observations: (inserted_sequence_or_''-for-no-insertion, read_err)
     for every read with an opinion at this anchor position (both reads that
     inserted something here and reads that, covering this position, did
-    not). Returns (consensus_insert, qv, depth); '' means no insertion
-    called. Ties (including "no evidence either way beats a lone read's
-    homopolymer slip") are broken toward '' -- conservative by construction,
-    consistent with DESIGN.md's caution about over-calling indels from
-    single-sample ONT homopolymer noise (S1/S6)."""
+    not). Returns (consensus_insert, qv, depth, dissent); '' means no
+    insertion called. Ties (including "no evidence either way beats a lone
+    read's homopolymer slip") are broken toward '' -- conservative by
+    construction, consistent with DESIGN.md's caution about over-calling
+    indels from single-sample ONT homopolymer noise (S1/S6)."""
     if not observations:
-        return "", 0.0, 0
+        return "", 0.0, 0, 0
 
     distinct = sorted({obs for obs, _ in observations})
     if distinct == [""]:
-        return "", 0.0, len(observations)
+        return "", 0.0, len(observations), 0
 
     states = tuple(distinct) if "" in distinct else ("",) + tuple(distinct)
     n_alt = max(len(states) - 1, 1)
@@ -220,7 +230,8 @@ def _call_insertion(
             scores[s] += log_match if s == obs else log_mismatch
 
     best, qv = _qv_and_best(scores, preferred_on_tie="")
-    return best, qv, len(observations)
+    dissent = sum(1 for obs, _ in observations if obs != best)
+    return best, qv, len(observations), dissent
 
 
 def _haplotype_pileup(
@@ -316,37 +327,37 @@ def build_haplotype_consensus(
     for ref_pos0 in range(len(template_seq)):
         pos1 = ref_pos0 + 1
         ins_obs = insertions.get(ref_pos0, [])
-        ins_state, ins_qv, ins_depth = _call_insertion(ins_obs)
+        ins_state, ins_qv, ins_depth, ins_dissent = _call_insertion(ins_obs)
         if ins_state:
             seq_out.extend(ins_state)
             qv_out.extend([round(ins_qv)] * len(ins_state))
             variants.append(ConsensusVariant(
-                pos=pos1, ref="", alt=ins_state, qv=ins_qv, depth=ins_depth
+                pos=pos1, ref="", alt=ins_state, qv=ins_qv, depth=ins_depth, dissent=ins_dissent
             ))
 
         template_base = template_seq[ref_pos0].upper()
-        call_state, call_qv, depth = _call_substitution_or_deletion(
+        call_state, call_qv, depth, dissent = _call_substitution_or_deletion(
             observations.get(ref_pos0, []), template_base
         )
         if call_state == _DELETION:
             variants.append(ConsensusVariant(
-                pos=pos1, ref=template_base, alt="", qv=call_qv, depth=depth
+                pos=pos1, ref=template_base, alt="", qv=call_qv, depth=depth, dissent=dissent
             ))
         else:
             if call_state != template_base:
                 variants.append(ConsensusVariant(
-                    pos=pos1, ref=template_base, alt=call_state, qv=call_qv, depth=depth
+                    pos=pos1, ref=template_base, alt=call_state, qv=call_qv, depth=depth, dissent=dissent
                 ))
             seq_out.append(call_state)
             qv_out.append(round(call_qv))
 
     trailing_pos = len(template_seq)
-    ins_state, ins_qv, ins_depth = _call_insertion(insertions.get(trailing_pos, []))
+    ins_state, ins_qv, ins_depth, ins_dissent = _call_insertion(insertions.get(trailing_pos, []))
     if ins_state:
         seq_out.extend(ins_state)
         qv_out.extend([round(ins_qv)] * len(ins_state))
         variants.append(ConsensusVariant(
-            pos=trailing_pos + 1, ref="", alt=ins_state, qv=ins_qv, depth=ins_depth
+            pos=trailing_pos + 1, ref="", alt=ins_state, qv=ins_qv, depth=ins_depth, dissent=ins_dissent
         ))
 
     return HaplotypeConsensus(

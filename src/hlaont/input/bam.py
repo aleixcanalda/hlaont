@@ -48,7 +48,7 @@ def _samtools_region(region: Region) -> str:
 
 
 def extract_mini_bam(
-    input_path: Path,
+    input_path: Path | str,
     reference_path: Path | None,
     region_set: RegionSet,
     output_path: Path,
@@ -62,6 +62,9 @@ def extract_mini_bam(
     input_path must already be indexed (.bai/.crai) -- required for the
     region queries below; samtools raises loudly if it is not, which is the
     correct failure mode (a silently-empty extraction would be far worse).
+    May be an http(s):// URL (cli.py's is_remote_bam()) instead of a local
+    path -- htslib range-requests only the regions/unmapped-reads block
+    needed, never fetching the whole remote file.
 
     `reference_path` is `-T` for `samtools view`, needed to decode CRAM (its
     records are reference-compressed) but not a plain BAM (records already

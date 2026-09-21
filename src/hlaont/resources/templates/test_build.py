@@ -45,6 +45,33 @@ FT   UTR             751..1000
 """
 
 
+# Real-shaped partial (exon-subset) submission -- same shape as
+# HLA-C*07:457's own real IPD record (HLA14025): join(<1..73,74..150),
+# exons 2-3 only, the literal /partial qualifier _handle_ft_line() keys
+# off of. Deliberately a different gene ("HLA-PARTIAL") from _GENOMIC_FT's
+# "HLA-TEST"/"HLA-OTHER" fixtures above so this test's genes.yaml can
+# target it without perturbing the existing genomic-pool assertions.
+_PARTIAL_FT = """\
+FT   source          1..150
+FT   CDS             join(<1..73,74..150)
+FT                   /codon_start=3
+FT                   /partial
+FT                   /gene="{gene}"
+FT   exon            1..73
+FT                   /number="2"
+FT   exon            74..150
+FT                   /number="3"
+"""
+
+
+def _append_partial_record(dat_path: Path, allele: str, seq: str) -> None:
+    gene = allele.split("*")[0]
+    with open(dat_path, "a") as fh:
+        fh.write(_HLA_DAT_HEADER.format(length=len(seq), allele=allele))
+        fh.write(_PARTIAL_FT.format(gene=gene))
+        fh.write("SQ   Sequence\n" + seq + "\n//\n")
+
+
 def _write_hla_dat(tmp_path: Path, alleles: dict[str, str]) -> Path:
     """alleles: allele_name -> 1000bp sequence (must have >=2 UTR + >=1
     intron to qualify as "genomic" under build.py's require_genomic=True
@@ -220,3 +247,46 @@ def test_build_falls_back_to_bundled_assembly_source_without_hla_seq_dir(tmp_pat
     # "sources" list distinguishes bundle-loaded from freshly-parsed).
     assert "hla_seq-assemblies-gtf" in meta
     assert "hla_seq-assemblies-bundle" not in meta
+
+
+def test_cds_catalogue_includes_partial_record_with_exon_numbers(tmp_path: Path) -> None:
+    """2026-09-20, real HG03009/HLA-C*07:457 case: a genuinely /partial
+    (exon-subset) IPD record must (a) never enter the genomic template
+    pool, (b) still appear in ref.gene.cds_catalogue.tsv.gz, flagged
+    partial=True with its real covered exon numbers -- the two pieces
+    stages/novelty.py's `_partial_extension_match()` gate needs."""
+    ipd_seq = "ACGT" * 250  # 1000bp genomic record, matches _GENOMIC_FT
+    dat_path = _write_hla_dat(tmp_path, {"HLA-TEST*01:01": ipd_seq})
+    partial_seq = "ACGT" * 37 + "A" * 2  # 150bp, matches _PARTIAL_FT's coordinates
+    _append_partial_record(dat_path, "HLA-TEST*99:999", partial_seq)
+    genes_yaml = _write_genes_yaml(tmp_path)
+
+    out_dir = tmp_path / "pool"
+    build.main([
+        "--genes-yaml", str(genes_yaml), "--raw-dir", str(tmp_path / "raw"),
+        "--out-dir", str(out_dir), "--ipd-dat", str(dat_path),
+    ])
+
+    # (a) the genomic pool is unaffected -- still just the one real
+    # genomic record, never the partial one.
+    manifest = json.loads((out_dir / "manifest.json").read_text())
+    assert manifest["records_per_gene"]["HLA-TEST"] == 1
+    fasta = gzip.open(out_dir / "ref.gene.fa.gz", "rt").read()
+    assert "HLA-TEST*99:999" not in fasta
+
+    # (b) the CDS catalogue has both rows, the partial one flagged and
+    # carrying its real covered exon numbers.
+    rows = {}
+    with gzip.open(out_dir / "ref.gene.cds_catalogue.tsv.gz", "rt") as fh:
+        import csv
+        for row in csv.DictReader(fh, delimiter="\t"):
+            rows[row["allele"]] = row
+
+    assert rows["HLA-TEST*01:01"]["partial"] == "False"
+    assert rows["HLA-TEST*01:01"]["exon_numbers"] == "1,2,3"
+
+    partial_row = rows["HLA-TEST*99:999"]
+    assert partial_row["partial"] == "True"
+    assert partial_row["exon_numbers"] == "2,3"
+    assert partial_row["cds_sequence"] == partial_seq
+    assert partial_row["cds_length"] == "150"

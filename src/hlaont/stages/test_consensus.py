@@ -78,6 +78,7 @@ def test_consensus_recovers_a_real_haplotype_substitution(tmp_path):
     called = next(v for v in subs if v.pos == 201)
     assert called.alt == true_hap_a[200]
     assert called.qv > 10  # 12 agreeing reads should be confident
+    assert called.dissent == 0  # every one of the 12 reads agreed
 
     hap_b = by_allele["GENE1*01:02"]
     assert hap_b.n_reads_assigned == 12
@@ -109,6 +110,38 @@ def test_consensus_recovers_an_insertion(tmp_path):
     assert len(ins) == 1
     assert ins[0].alt == "TTT"
     assert len(hap_a.sequence) == len(allele_a) + 3
+
+
+def test_consensus_variant_dissent_counts_real_minority_reads(tmp_path):
+    """2026-09-13: `ConsensusVariant.dissent` (added for stages/novelty.py's
+    read-support filter) must reflect the real minority-vote count, not
+    just depth -- a mix of 9 reads calling the real substitution and 3
+    reads still reading the template base at the same position."""
+    rng = random.Random(5)
+    allele_a = _random_seq(500, rng)
+    allele_b = _mutate(allele_a, 5, random.Random(13))
+    fasta, meta = _build_pool(tmp_path, allele_a, allele_b)
+
+    true_hap_a = _substitute(allele_a, 150)
+    reads = (
+        [_candidate_read(f"a{i}", true_hap_a, "GENE1") for i in range(9)]
+        + [_candidate_read(f"a_noisy{i}", allele_a, "GENE1") for i in range(3)]
+        + [_candidate_read(f"b{i}", allele_b, "GENE1") for i in range(12)]
+    )
+
+    matrices = build_gene_matrices(reads, pool_fasta=fasta, pool_meta=meta, n_threads=2)
+    m = matrices["GENE1"]
+    call = select_template_set_ont_r10(m, reads, cn=2, pool_fasta=fasta)
+
+    results = build_gene_consensus(m, reads, call, pool_fasta=fasta)
+    by_allele = {r.template_allele: r for r in results}
+    hap_a = by_allele["GENE1*01:01"]
+
+    subs = [v for v in hap_a.variants if v.ref and v.alt and len(v.alt) == 1 and v.pos == 151]
+    assert len(subs) == 1
+    called = subs[0]
+    assert called.depth == 12
+    assert called.dissent == 3
 
 
 def test_build_gene_consensus_is_deterministic(tmp_path):
