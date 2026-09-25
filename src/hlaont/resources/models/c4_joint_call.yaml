@@ -1,0 +1,26 @@
+version: 1
+source: >-
+  2026-09-25 C4 CN session (hlaont_bench/c4_cn_improve_20260925/: signals.py,
+  joint_herv.py), 26 benchmark runs (13 samples x 15x/30x) against Immuannot
+  truth. Read by stages/c4_chr17_cn.py (load_c4_joint_call_params). Not fitted
+  to the benchmark: the count-based total has no calibration constant; the
+  values below are model choices (form_proportion_sd stable over 0.1-0.2).
+  No copy-number cap: the search is exact over all non-negative integers
+  (c4_chr17_cn.call_c4_forms_jointly).
+# Long-form-only HERV insertion, in C4AL/C4BL_flanked_3000bp coordinates of
+# resources/controls/c4_flanked_forms.chm13v2.fa.gz (minimap2 -x asm5 of each
+# short contig onto its long contig: identical in A and B, 6,367bp =
+# len(L) - len(S)). Short contigs break at herv_start.
+herv_start: 5627
+herv_end: 11994
+# Bases a read must cover on each side of the HERV (long) or the breakpoint
+# (short) to count as spanning it.
+herv_anchor_bp: 500
+joint_call:
+  # probability floor for the A/B and long/short binomial terms
+  prob_floor: 0.03
+  # Poisson mean at total CN 0, as a fraction of expected reads per copy
+  zero_cn_mean_frac: 0.05
+  # SD of each form's depth proportion around its called share of the total
+  form_proportion_sd: 0.15
+  gq_cap: 99.0

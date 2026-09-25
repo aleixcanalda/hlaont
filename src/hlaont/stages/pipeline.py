@@ -233,6 +233,8 @@ from c4_cn import (  # noqa: E402
 from c4_chr17_cn import (  # noqa: E402
     DEFAULT_C4_FLANKED_FASTA,
     C4Chr17ControlResult,
+    C4JointCall,
+    call_c4_forms_jointly,
     estimate_c4_cn_via_chr17_control,
 )
 from c4_form import (  # noqa: E402
@@ -345,6 +347,11 @@ class SampleResult:
     # per-haplotype C4 is real, unstarted follow-up work, not silently
     # covered by this field.
     c4_chr17_control: "C4Chr17ControlResult | None" = None
+    # 2026-09-25, user-directed: integer per-form C4 call from the chr17-
+    # control signals plus Phase 2's A/B votes (c4_chr17_cn.
+    # call_c4_forms_jointly). None whenever c4_chr17_control is None or has
+    # no count-based total. Unphased only, same as c4_chr17_control.
+    c4_joint_call: "C4JointCall | None" = None
 
 
 @dataclass(frozen=True)
@@ -830,6 +837,11 @@ def _run_sample_core(
         control_depth=control_depth, control_n_reads=control_n_reads,
         n_threads=n_threads, minimap2_bin=minimap2_bin, samtools_bin=samtools_bin,
     ) if compute_c4_chr17_control else None
+    c4_joint_call = None if c4_chr17_control is None else call_c4_forms_jointly(
+        c4_chr17_control,
+        n_a=c4_ab_call.n_a if c4_ab_call is not None else 0,
+        n_b=c4_ab_call.n_b if c4_ab_call is not None else 0,
+    )
 
     if progress:
         progress(f"Stages 2-5: typing {len(manifest)} gene(s)")
@@ -1005,6 +1017,7 @@ def _run_sample_core(
         c4_form_call=c4_form_call,
         c4_per_gene_cn=c4_per_gene_cn,
         c4_chr17_control=c4_chr17_control,
+        c4_joint_call=c4_joint_call,
     )
     return sample_result, reads, matrices, c4_matrices
 

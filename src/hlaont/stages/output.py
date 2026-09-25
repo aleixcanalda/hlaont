@@ -582,14 +582,35 @@ def write_qc_json(
             "control_depth": result.c4_chr17_control.control_depth,
             "control_n_reads": result.c4_chr17_control.control_n_reads,
             "total_cn_estimate": result.c4_chr17_control.total_cn_estimate,
+            # 2026-09-25: count-based total and its inputs; the pre-2026-09-25
+            # depth-based numbers kept alongside as a cross-check
+            # (stages/c4_chr17_cn.py module docstring).
+            "depth_total_cn_estimate": result.c4_chr17_control.depth_total_cn_estimate,
+            "n_reads_5p_window": result.c4_chr17_control.n_reads_5p_window,
+            "reads_per_copy": result.c4_chr17_control.reads_per_copy,
+            "herv_spanning": {
+                "long": result.c4_chr17_control.herv_long_spanning,
+                "short": result.c4_chr17_control.herv_short_spanning,
+                "long_exposure": result.c4_chr17_control.herv_long_exposure,
+                "short_exposure": result.c4_chr17_control.herv_short_exposure,
+            },
             "forms": {
                 form_name: {
                     "n_reads": form_cn.n_reads,
                     "depth": form_cn.depth,
                     "cn_estimate": form_cn.cn_estimate,
+                    "depth_cn_estimate": form_cn.depth_cn_estimate,
                 }
                 for form_name, form_cn in sorted(result.c4_chr17_control.forms.items())
             },
+        },
+        # 2026-09-25: integer per-form call (stages/c4_chr17_cn.py
+        # call_c4_forms_jointly); None when no count-based total exists.
+        "c4_joint_call": None if result.c4_joint_call is None else {
+            "forms": dict(result.c4_joint_call.forms),
+            "total": result.c4_joint_call.total,
+            "gq": result.c4_joint_call.gq,
+            "log_likelihood": result.c4_joint_call.log_likelihood,
         },
         "dorado_version": dorado_version,
         "reference_build_md5": reference_build_md5,
