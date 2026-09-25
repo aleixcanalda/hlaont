@@ -316,7 +316,14 @@ def write_calls_tsv(
             # (module docstring) -- the older mechanism stays computed and
             # visible in qc.json's own "gene_cn" block, just not repeated
             # in this row.
-            cn_total = "" if chr17.total_cn_estimate is None else f"{chr17.total_cn_estimate:.2f}"
+            # 2026-09-25, user-requested: report the integer joint call
+            # (c4_chr17_cn.call_c4_forms_jointly) when it exists; the
+            # continuous estimates stay in qc.json's "c4_chr17_control".
+            joint = result.c4_joint_call
+            if joint is not None:
+                cn_total = str(joint.total)
+            else:
+                cn_total = "" if chr17.total_cn_estimate is None else f"{chr17.total_cn_estimate:.2f}"
             n_reads_total = sum(f.n_reads for f in chr17.forms.values())
             row = [C4_REPORTED_GENE, cn_total, "", "", "", "", "", str(n_reads_total), "", "", "", form_note] + c4_extra_col
             fh.write("\t".join(row) + "\n")
@@ -324,7 +331,10 @@ def write_calls_tsv(
                 form_cn = chr17.forms.get(form_name)
                 if form_cn is None:
                     continue
-                cn_str = "" if form_cn.cn_estimate is None else f"{form_cn.cn_estimate:.2f}"
+                if joint is not None and form_name in joint.forms:
+                    cn_str = str(joint.forms[form_name])
+                else:
+                    cn_str = "" if form_cn.cn_estimate is None else f"{form_cn.cn_estimate:.2f}"
                 row = [form_name, cn_str, "", "", "", "", "", str(form_cn.n_reads), "", "", "", ""] + c4_extra_col
                 fh.write("\t".join(row) + "\n")
         elif c4_cn is not None:
