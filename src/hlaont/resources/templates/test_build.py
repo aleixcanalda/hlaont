@@ -1,10 +1,5 @@
-"""End-to-end tests for build.py's multi-source wiring (2026-08-22): IPD +
-AssemblyGTFSource combined, cross-source dedup, and manifest provenance --
-using tiny synthetic fixtures (hla.dat, genes.yaml, hla_seq_dir), not the
-real IPD/hla_seq datasets. The pre-existing IPD-only path (gene selection,
-CDS catalogue, the missing_model hard-stop) is untouched by this change and
-already covered by test_sources.py; this file covers only what's new.
-"""
+"""End-to-end tests for build.py's multi-source wiring (IPD +
+AssemblyGTFSource, dedup, provenance) on synthetic fixtures."""
 from __future__ import annotations
 
 import gzip
@@ -45,12 +40,8 @@ FT   UTR             751..1000
 """
 
 
-# Real-shaped partial (exon-subset) submission -- same shape as
-# HLA-C*07:457's own real IPD record (HLA14025): join(<1..73,74..150),
-# exons 2-3 only, the literal /partial qualifier _handle_ft_line() keys
-# off of. Deliberately a different gene ("HLA-PARTIAL") from _GENOMIC_FT's
-# "HLA-TEST"/"HLA-OTHER" fixtures above so this test's genes.yaml can
-# target it without perturbing the existing genomic-pool assertions.
+# Partial (exon 2-3 only) record shaped like HLA-C*07:457 (HLA14025), in its
+# own gene so genomic-pool assertions are unaffected.
 _PARTIAL_FT = """\
 FT   source          1..150
 FT   CDS             join(<1..73,74..150)
@@ -73,11 +64,8 @@ def _append_partial_record(dat_path: Path, allele: str, seq: str) -> None:
 
 
 def _write_hla_dat(tmp_path: Path, alleles: dict[str, str]) -> Path:
-    """alleles: allele_name -> 1000bp sequence (must have >=2 UTR + >=1
-    intron to qualify as "genomic" under build.py's require_genomic=True
-    bar -- this module's own single-exon fixture would silently yield zero
-    pool records, which is exactly what happened before this comment was
-    added)."""
+    """alleles: name -> 1000bp sequence, written with 2 UTRs and an intron so
+    the record counts as genomic."""
     path = tmp_path / "hla.dat"
     with open(path, "w") as fh:
         for allele, seq in alleles.items():
@@ -116,10 +104,8 @@ genes:
 
 def _write_hla_seq_fixture(tmp_path: Path, gene: str, haplotype_id: str,
                             contig: str, seq: str) -> None:
-    # AssemblyGTFSource's default all_fasta_path is hla_seq_dir/all_HLA.fasta.gz,
-    # bgzip-compressed (matching real hla_seq/'s convention, .fai requires
-    # proper BGZF, not plain gzip) -- accumulate a plain staging fasta across
-    # calls, then (re)compress+index the whole thing each time.
+    # all_HLA.fasta.gz must be BGZF for .fai: rebuild it from a plain staging
+    # FASTA on each call.
     staging_path = tmp_path / "all_HLA.staging.fasta"
     with open(staging_path, "a") as fh:
         fh.write(f">{contig}\n{seq}\n")
@@ -250,11 +236,8 @@ def test_build_falls_back_to_bundled_assembly_source_without_hla_seq_dir(tmp_pat
 
 
 def test_cds_catalogue_includes_partial_record_with_exon_numbers(tmp_path: Path) -> None:
-    """2026-09-20, real HG03009/HLA-C*07:457 case: a genuinely /partial
-    (exon-subset) IPD record must (a) never enter the genomic template
-    pool, (b) still appear in ref.gene.cds_catalogue.tsv.gz, flagged
-    partial=True with its real covered exon numbers -- the two pieces
-    stages/novelty.py's `_partial_extension_match()` gate needs."""
+    """A /partial record stays out of the pool but appears in the CDS
+    catalogue with partial=True and its exon numbers."""
     ipd_seq = "ACGT" * 250  # 1000bp genomic record, matches _GENOMIC_FT
     dat_path = _write_hla_dat(tmp_path, {"HLA-TEST*01:01": ipd_seq})
     partial_seq = "ACGT" * 37 + "A" * 2  # 150bp, matches _PARTIAL_FT's coordinates

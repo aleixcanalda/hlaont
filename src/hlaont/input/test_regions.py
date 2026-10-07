@@ -95,10 +95,7 @@ def test_chm13_accession_naming_convention_is_resolved():
 
 
 def test_grch38_header_with_chr17_includes_chr17_control_region():
-    # 2026-09-01, user-directed: --bam extraction must also pull the chr17
-    # control region stages/chr17_control.py normalises CN against --
-    # user-supplied real coordinates, GRCh38 chr17:72,062,001-76,562,000
-    # (1-based).
+    # chr17 control region (GRCh38 chr17:72,062,001-76,562,000).
     sq = {"chr6": CHR6_LEN, "chr17": 83257441}
     result = derive_regions(sq)
     assert result.build == "GRCh38"
@@ -149,11 +146,7 @@ def test_derivation_is_deterministic_across_reruns():
 
 
 def test_default_resources_load_and_identify_real_grch38_naming():
-    # Real contig names/lengths lifted from the actual 1000G/UKB-style
-    # GRCh38_full_analysis_set_plus_decoy_hla.fa.fai (fetched 2026-07-21),
-    # not synthetic -- confirms the shipped resources/regions/ files
-    # actually match a real reference's naming, not just this test's own
-    # fixtures.
+    # Contig names/lengths from the real GRCh38_full_analysis_set_plus_decoy_hla.fa.fai.
     sq = {
         "chr6": CHR6_LEN,
         "chr1": 248956422,

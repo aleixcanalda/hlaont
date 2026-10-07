@@ -1,32 +1,15 @@
 """Stage 0 FASTQ anchor sieve (DESIGN.md S3.2).
 
-Portability/validation path: HPRC/GIAB fixtures and any future amplicon data
-where only FASTQ is available, not the primary UKB CRAM path (S3.1, not yet
-built). Maps reads against the rebuilt anchor set (resources/anchors/) and
-keeps only reads with a qualifying hit to a *target*-role gene, using decoy
-anchors to reject reads that better match a paralog.
-
-Logic ported from FuFiHLA's share/fufihla/src/raw_reads_filter.py (verified
-against github.com/jingqing-hu/FuFiHLA -- both its HiFi and "nano" pipelines
-call this same script unchanged). The three thresholds are shipped as a
-versioned params file, not hardcoded (resources/models/stage0_fastq_sieve.yaml)
--- they are provisional ports, not re-derived for ONT R10 (invariant 11).
-
-Alignment shells out to the minimap2 CLI (not mappy) using FuFiHLA's own
-scoring string, ported verbatim from share/fufihla/scripts/FuFiHLA.sh and
-FuFiHLA_nano.sh step1 -- identical in both, confirmed 2026-07-21 against
-github.com/jingqing-hu/FuFiHLA, so there is no platform-specific tuning being
-discarded by porting it as-is:
+Aligns reads against the anchor set (resources/anchors/) and keeps reads
+with a qualifying hit to a target gene; decoy anchors reject reads that
+better match a paralogue. Logic ported from FuFiHLA's raw_reads_filter.py;
+thresholds live in resources/models/stage0_fastq_sieve.yaml (invariant 11:
+not re-derived for ONT). minimap2 uses FuFiHLA's scoring string verbatim
+(milestone-1 parity):
 
     -e10000 -k19 -w19 -g10k -A1 -B4 -O6,26 -E2,1 -s350 -c --end-bonus=10
 
-mappy's map-ont preset is minimap2's own maintained default, not this string.
-Milestone 1 is reproducing FuFiHLA's own numbers, so on the one axis that is
-trivial to keep byte-identical -- alignment scoring -- there is no reason to
-diverge from the tool being validated against. -N is raised from minimap2's
-default (5) to _BEST_N below: that is not part of the ported scoring string,
-it is a search-completeness knob the decoy-rejection logic (below) needs to
-see every anchor a read hits, target or decoy, not an arbitrary top-N cap.
+plus -N _BEST_N so every anchor hit, target or decoy, is reported.
 """
 from __future__ import annotations
 
@@ -47,15 +30,10 @@ DEFAULT_ANCHORS = REPO_ROOT / "resources" / "anchors" / "anchors.fa.gz"
 DEFAULT_ANCHORS_META = REPO_ROOT / "resources" / "anchors" / "anchors.meta.tsv.gz"
 DEFAULT_PARAMS = REPO_ROOT / "resources" / "models" / "stage0_fastq_sieve.yaml"
 
-# Search-completeness knob, not a calibrated biological threshold: the anchor
-# set is only ~170 sequences, so scoring every anchor per read is cheap and
-# -N only needs to be >= that count to guarantee we see every hit a read
-# makes (including decoys) rather than an arbitrary top-N by chaining score.
+# >= the anchor count (~190), so every hit is reported.
 _BEST_N = 256
 
-# FuFiHLA's step1 scoring string (FuFiHLA.sh / FuFiHLA_nano.sh), ported
-# verbatim -- see module docstring. -t/-N are ours, not theirs: a resource
-# knob and a search-completeness knob respectively, not part of the score.
+# FuFiHLA step1 scoring string (-t/-N added separately).
 _MINIMAP2_SCORING_ARGS = (
     "-e10000", "-k19", "-w19", "-g10k",
     "-A1", "-B4", "-O6,26", "-E2,1", "-s350",
@@ -117,18 +95,8 @@ def _load_allele_role(meta_path: Path) -> dict[str, tuple[str, str]]:
 def _run_minimap2(
     anchors_path: Path, fastq_path: Path, n_threads: int
 ) -> dict[str, list[tuple[str, int, int, int, int]]]:
-    """Run minimap2 anchors-as-index/fastq-as-query, grouped by read id.
-
-    Returns read_id -> list of (ctg, ctg_len, r_st, r_en, nm): ctg/ctg_len
-    are the anchor name/length (PAF cols 6/7) and r_st/r_en are anchor-space
-    coordinates (PAF cols 8/9), since anchors are the index/target and the
-    FASTQ is the query -- matching FuFiHLA's own `minimap2 TEMPLATE READS`
-    argument order in FuFiHLA.sh/FuFiHLA_nano.sh step1.
-
-    Not a streaming call: minimap2 runs to completion before any hits are
-    available. Acceptable here -- this path handles HPRC/amplicon-scale
-    FASTQs (S3.2 docstring), never the 500K-sample UKB CRAM path.
-    """
+    """Run minimap2 (anchors as index, reads as query) and group hits by
+    read: read_id -> [(anchor, anchor_len, a_start, a_end, nm)]."""
     proc = subprocess.run(
         [
             "minimap2",
@@ -164,13 +132,8 @@ def sieve_fastq(
     stats: SieveStats | None = None,
     n_threads: int = 4,
 ) -> Iterator[CandidateRead]:
-    """Stream CandidateReads from a FASTQ passing the anchor sieve (S3.2).
-
-    stats, if given, is mutated in place as reads are consumed -- read it
-    only after the iterator is exhausted. n_threads is a resource knob for
-    the minimap2 subprocess (see _run_minimap2), independent of the ported
-    scoring string.
-    """
+    """Yield CandidateReads passing the anchor sieve. `stats` is filled in
+    as the iterator is consumed."""
     if params is None:
         params = SieveParams.load()
     if stats is None:
@@ -195,13 +158,8 @@ def sieve_fastq(
                 if match_len <= 0:
                     continue
                 coverage = match_len / ctg_len
-                # NB: -s350 in the ported scoring string means minimap2 never
-                # reports a hit with match_len below ~350bp in the first
-                # place (score is 1/matched base at -A1) -- this edge-rescue
-                # clause is only reachable for matches that already clear
-                # that floor, not for arbitrarily short edge overlaps.
-                # Verified 2026-07-21: a 150bp perfect match against a
-                # 1000bp anchor produces zero PAF lines under this string.
+                # -s350 means hits < ~350bp are never reported, so this
+                # rescue only applies to edge hits above that.
                 near_edge = (
                     r_st <= params.anchor_edge_distance_bp
                     or r_en >= ctg_len - params.anchor_edge_distance_bp
@@ -222,9 +180,8 @@ def sieve_fastq(
                 stats.n_dropped_no_qualifying_alignment += 1
                 continue
 
-            # Best (lowest) mismatch rate across ALL anchors, target or decoy: a
-            # read whose closest match is a paralog/decoy, with no target hit
-            # within the multiplier of that, is dropped entirely (DESIGN S3.2).
+            # Drop reads with no target hit within the multiplier of their
+            # best (lowest) mismatch rate over all anchors, decoys included.
             best_score = min(score for _, _, _, score, _ in qualifying)
             threshold = params.mismatch_rate_multiplier * best_score
             target_hits = tuple(

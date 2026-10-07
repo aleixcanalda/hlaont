@@ -73,12 +73,9 @@ def test_ambiguous_consensus_produces_a_multi_allele_ambiguity_set(tmp_path):
     }
     fasta, meta = _build_pool(tmp_path, records)
 
-    # A single base out of 500 costs the rival allele a real (~4 nat)
-    # likelihood penalty under the context model -- correctly excluded from
-    # the default provisional 3.0-nat margin (not itself under test here).
-    # What this test checks is the ambiguity-set *mechanism*: given a
-    # deliberately permissive margin, the near-identical allele must be
-    # included, and the genuinely distant one must still be excluded.
+    # One base in 500 costs ~4 nats, outside the default 3.0 margin; with a
+    # permissive margin the near-identical allele is in the ambiguity set
+    # and the distant one is not.
     consensus = HaplotypeConsensus(
         gene="GENE1", template_allele="GENE1*01:01",
         n_reads_assigned=10, sequence=base, qv=tuple([40] * len(base)), variants=(),
@@ -88,10 +85,7 @@ def test_ambiguous_consensus_produces_a_multi_allele_ambiguity_set(tmp_path):
 
     assert call.called_allele == "GENE1*01:01"
     assert "GENE1*01:02" in call.ambiguity_set
-    # The unrelated allele is divergent enough that minimap2 reports no
-    # alignment for it at all -- correctly never a candidate in the first
-    # place (genotype.candidate_alleles()'s "no real alignment" bar), not
-    # merely excluded from the ambiguity set.
+    # The distant allele doesn't align at all, so it's never a candidate.
     assert "GENE1*02:01" not in call.posterior
     assert set(call.posterior) == {"GENE1*01:01", "GENE1*01:02"}
     assert abs(sum(call.posterior.values()) - 1.0) < 1e-9

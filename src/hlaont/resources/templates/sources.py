@@ -1,10 +1,5 @@
-"""Template pool sources.
-
-A source yields full-length TemplateRecords for genes in the manifest. IPD is
-the only source wired up today; Immuannot HPRC/CPC assemblies and MHC ALT
-haplotypes (DESIGN.md S2d) are added later as new Source implementations, not
-by changing this shape.
-"""
+"""Template pool sources: each yields full-length TemplateRecords for
+manifest genes (IPD here; assemblies in assembly_sources.py)."""
 from __future__ import annotations
 
 import hashlib
@@ -27,22 +22,13 @@ IPD_DAT_URL_TEMPLATE = (
 
 @dataclass(frozen=True)
 class GeneModel:
-    """Per-allele gene structure, coordinates 1-based inclusive in this
-    record's own sequence numbering (DESIGN.md S5 novelty classification
-    needs this: mapping a consensus variant to intronic/UTR/synonymous/
-    nonsynonymous/splice requires the exact feature boundaries of the
-    template that consensus was built against, not just presence/absence
-    of an intron the way build.py's genomic-record filter already checks).
+    """Per-allele gene structure, 1-based inclusive in the record's own
+    sequence (for novelty classification).
 
-    `cds_exons` is the CDS's `join(...)` ranges in transcript order (or a
-    single range for a one-exon CDS) -- concatenating the substrings they
-    address and translating from `codon_start` gives the protein IPD's own
-    /translation qualifier records, which is how a nonsynonymous/synonymous
-    call is made without re-deriving a translation table.
-    `exons`/`introns` are (number, start, end) from the FT table's own
-    /number qualifiers (None if a record lacks one -- not expected in
-    practice but not assumed). `utrs` is in position order (typically
-    5' then 3'; a record can have zero, one, or two)."""
+    `cds_exons`: CDS join() ranges in transcript order; concatenated and
+    translated from `codon_start` they give IPD's protein. `exons`/`introns`:
+    (number, start, end), number None if absent. `utrs`: in position order
+    (0-2 entries)."""
 
     cds_exons: tuple[tuple[int, int], ...]
     codon_start: int
@@ -52,24 +38,13 @@ class GeneModel:
 
 
 def cds_nucleotide_sequence(sequence: str, gene_model: GeneModel) -> str:
-    """Concatenate `gene_model.cds_exons` ranges (1-based inclusive, this
-    record's own numbering) out of `sequence` in transcript order --
-    resources/templates/build.py's CDS catalogue (DESIGN.md S5's
-    `extension` taxonomy: "CDS matches a known allele; IPD holds no
-    full-length record") and stages/novelty.py both need this, so it lives
-    here rather than being duplicated in either."""
+    """CDS sequence: `gene_model.cds_exons` ranges concatenated."""
     return "".join(sequence[s - 1:e] for s, e in gene_model.cds_exons)
 
 
 def cds_exon_numbers(gene_model: GeneModel) -> list[int] | None:
-    """The IMGT `/number` for each of `gene_model.cds_exons`'s segments, in
-    order, resolved by containment against `gene_model.exons`'s own
-    numbered FT ranges. None if any segment can't be resolved (an exon
-    feature with no `/number` qualifier) -- the partial-CDS extension-
-    matching gate (stages/novelty.py's `_partial_extension_match()`) must
-    know exactly which exon numbers a fragment covers before treating it as
-    confirming anything; an unresolvable segment means that gate silently
-    doesn't apply to this record, not a guessed coverage."""
+    """IMGT exon number of each CDS segment, by containment in
+    `gene_model.exons`; None if any is unresolved."""
     numbers: list[int] = []
     for cs, ce in gene_model.cds_exons:
         match = None
@@ -94,36 +69,14 @@ class TemplateRecord:
     fields: int
     source: str
     source_version: str
-    # True iff IPD's own FT table marks this record `/partial` (a genuinely
-    # truncated CDS, e.g. exon 2-3 only, not just "not genomic") -- dropped
-    # from every pool/catalogue by default (drop_partial=True below); a
-    # dedicated require_genomic=False, drop_partial=False parse.py pass
-    # (resources/templates/build.py) keeps these specifically to feed
-    # stages/novelty.py's partial-CDS extension-matching gate, which needs
-    # to see them, never to feed the actual template/alignment pool.
+    # IPD `/partial` record (truncated CDS). Excluded from the pool; kept
+    # only in the CDS catalogue for novelty's partial-extension check.
     partial: bool = False
     gene_model: GeneModel | None = field(default=None)
-    # Immuannot's own nearest-known-IPD-match guess for this exact sequence
-    # (assembly_sources.py's AssemblyGTFSource only -- None for every IPD-
-    # sourced record). Not authoritative (assembly_sources.py's own
-    # docstring: this is Immuannot's guess, not a curated database entry),
-    # but real HLA-N/P/T/U/W/Y/R output has no other real nomenclature to
-    # display at all (IPD has zero genomic records for them) -- stages/
-    # novelty.py uses this purely for display naming, still computing
-    # taxonomy/variants from a real diff against this record's own sequence,
-    # never assuming the guess is correct.
+    # Immuannot's nearest-IPD guess (assembly records only); display-only.
     nearest_ipd_match: str | None = field(default=None)
-    # The source GTF's own gene-line `template_allele` attribute (real
-    # per-haplotype hla_seq/ assemblies only, assembly_sources.py's
-    # AssemblyGTFSource) -- the exact nearest-IPD-match name Immuannot
-    # aligned this haplotype's real sequence against, *never* carrying a
-    # `:new` suffix (unlike nearest_ipd_match, sourced from the same GTF's
-    # transcript-line `consensus` attribute, which does). Display-only, same
-    # non-authoritative caveat as nearest_ipd_match: stages/output.py uses
-    # this to show a real, human-readable name (e.g. "HLA-W*01:01:01:05")
-    # in calls.tsv's `template_allele` column instead of this record's own
-    # content-hashed `allele` accession -- it never substitutes for `allele`
-    # anywhere a real pool lookup happens.
+    # Source GTF gene-line `template_allele` (assembly records only, never
+    # `:new`); shown in calls.tsv instead of the hash accession.
     gtf_template_allele: str | None = field(default=None)
 
 
@@ -163,13 +116,8 @@ _DE_RE = re.compile(r"^DE\s+(\S+?),\s*(.*)")
 _CC_VERSION_RE = re.compile(r"Release Version (\S+)")
 _GENE_FT_RE = re.compile(r'/gene="(.*)"')
 
-# FT feature table parsing (GeneModel -- see its docstring for why). A
-# feature-start line has its key immediately after the fixed "FT   " (2
-# chars + 3 spaces) prefix; a continuation/qualifier line indents further
-# (see resources/templates/sources.py's module notes / the raw hla.dat
-# format), so anchoring the key group right after those 3 literal spaces
-# is what tells the two apart -- a continuation line has a space there
-# instead and fails this match.
+# FT feature-start line: key right after "FT   "; continuation lines have a
+# space there instead.
 _FT_FEATURE_RE = re.compile(r"^FT   (\S+)\s+(.*)$")
 _RANGE_RE = re.compile(r"(\d+)\.\.(\d+)")
 _NUMBER_QUAL_RE = re.compile(r'/number="?(\d+)"?')
@@ -184,18 +132,11 @@ def _finalize_cds(cur: dict) -> None:
 
 
 def _handle_ft_line(cur: dict, line: str) -> None:
-    """Feed one FT line into `cur`'s in-progress GeneModel accumulators
-    (utrs/exons/introns/cds_exons/codon_start), alongside the pre-existing
-    partial/utr-count/intron-count bookkeeping `_flush` already used for
-    the genomic-completeness check (kept as-is, untouched by this)."""
+    """Feed one FT line into `cur`'s GeneModel accumulators."""
     if "/partial" in line:
         cur["partial"] = True
 
-    # A /number qualifier (or its absence) resolves whatever exon/intron
-    # feature is pending from the immediately preceding feature-start line
-    # -- checked first, on every line, so it applies regardless of what
-    # this line turns out to be otherwise (new feature, CDS continuation,
-    # or an unrelated qualifier).
+    # A /number qualifier (or its absence) resolves the pending exon/intron.
     pending = cur.get("_pending_feature")
     if pending is not None:
         kind, start, end = pending
@@ -283,23 +224,12 @@ def _flush(cur: dict | None, genomic_genes: set[str], source_version: str,
 
 def parse_ipd_dat(dat_path: Path, genomic_genes: set[str],
                    require_genomic: bool = True, drop_partial: bool = True) -> Iterator[TemplateRecord]:
-    """Stream hla.dat, yielding one TemplateRecord per allele whose gene is
-    in genomic_genes.
+    """Stream hla.dat, yielding a TemplateRecord per allele of genomic_genes.
 
-    require_genomic=True (default, template pool use): additionally require
-    "genomic" -- both UTRs plus at least one intron present (DESIGN.md S2b).
-    Same criterion as ipd_audit.py, not FuFiHLA's coarser `grep -v partial` on
-    the description line.
-
-    require_genomic=False (anchor decoy use, and the CDS-catalogue build):
-    any record, since a decoy anchor only needs to represent a paralog's
-    sequence well enough to catch stray reads -- it is never typed against.
-
-    drop_partial=True (default): drop records IPD's own FT table marks
-    `/partial` (a genuinely truncated CDS, not just non-genomic). Only
-    resources/templates/build.py's CDS-catalogue pass sets this False --
-    stages/novelty.py's partial-CDS extension-matching gate needs to see
-    these specifically; the real template/alignment pool never does.
+    require_genomic=True (pool): both UTRs and >= 1 intron (DESIGN.md S2b),
+    as in ipd_audit.py. False: any record (decoy anchors, CDS catalogue).
+    drop_partial=True: drop `/partial` records (only the CDS catalogue
+    keeps them).
     """
     cur: dict | None = None
     in_seq = False

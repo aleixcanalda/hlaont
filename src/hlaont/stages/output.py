@@ -1,33 +1,12 @@
-"""Output writers for a SampleResult (DESIGN.md S5).
+"""Output writers for a SampleResult (DESIGN.md S5): calls.tsv,
+consensus.fa + consensus.qv.tsv, variants.vcf, qc.json.
 
-Implements four of the six named outputs: `calls.tsv`, `consensus.fa` (+ a
-`consensus.qv.tsv` companion), `variants.vcf`, `qc.json`. **Not yet built,
-flagged rather than faked:** `annotations.gtf` (needs a real per-haplotype
-coordinate remap of GeneModelLite's exon/intron/UTR ranges onto the
-consensus's own coordinates -- a design task of its own, not a trivial
-format conversion) and `sufficient_stats.parquet` (DESIGN.md names it as
-"the Python calibration layer's input" but does not define a schema; there
-is no calib/ consumer yet to design one against). Building either as a
-placeholder would be worse than omitting it -- the development notes' "no half-
-finished implementations."
+Not built yet: annotations.gtf (needs a per-haplotype coordinate remap) and
+sufficient_stats.parquet (no schema defined).
 
-`variants.vcf` reconstructs proper VCF anchor-base convention for indels
-(an anchor base immediately before the event, REF/ALT both including it) --
-DESIGN.md S5 deliberately left this to "an output-writing concern" when
-`stages/consensus.py` and `stages/novelty.py` were built; this is that
-concern. Positions are in `called_allele`'s own coordinate numbering (same
-numbering as resources/templates/pool/ref.gene.models.jsonl.gz), not a
-genome coordinate -- CHROM is the called allele's own name, per DESIGN.md's
-"variants.vcf -- relative to closest reference allele."
-
-**QUAL is always "."** -- `stages/novelty.py`'s `NoveltyVariant` carries no
-per-base QV (`classify()` only ever receives the raw consensus string, not
-`stages/consensus.py`'s `HaplotypeConsensus.qv` array it was built from).
-Wiring the real per-base QV through requires either novelty.py taking the
-full HaplotypeConsensus, or this writer re-deriving a ref-to-consensus
-coordinate map itself (nontrivial once the alignment is reverse-stranded).
-Flagged as a real, bounded follow-up, not silently faked with a placeholder
-number.
+variants.vcf uses VCF anchor-base indels in `called_allele`'s own
+coordinates (CHROM = allele name). QUAL is always "." because novelty
+variants carry no per-base QV.
 """
 from __future__ import annotations
 
@@ -41,20 +20,15 @@ from genotype import load_allele_sequences
 from novelty import DEFAULT_POOL_META, NoveltyVariant, load_gtf_template_allele
 from pipeline import DEFAULT_POOL_FASTA, HaplotypeCallResult, SampleResult
 
-# User-requested, 2026-08-27: a haplotype call this thin on consensus
-# confidence (real HG00097 finding: HLA-DRB4, 4 reads, mean_qv 5.0, 37
-# variants -- passed the read-count floor but is still noise) is excluded
-# from calls.tsv's primary summary table entirely, not merely flagged.
-# Provisional (invariant 11): the user's own stated threshold, not fitted.
+# calls.tsv excludes haplotype calls below this mean QV (e.g. DRB4 at 4
+# reads, QV 5, 37 variants); qc.json still lists them. Provisional.
 DEFAULT_MIN_MEAN_QV = 30.0
 
 
 def _split_by_mean_qv(
     calls: tuple[HaplotypeCallResult, ...], min_mean_qv: float,
 ) -> tuple[list[HaplotypeCallResult], list[HaplotypeCallResult]]:
-    """(kept, filtered) -- filtered calls are never silently dropped: they
-    are still reported, by qc.json (write_qc_json's own filter, same
-    threshold), just not in the primary calls.tsv table."""
+    """(kept, filtered) by mean QV; filtered calls are reported in qc.json."""
     kept = [c for c in calls if c.mean_qv >= min_mean_qv]
     filtered = [c for c in calls if c.mean_qv < min_mean_qv]
     return kept, filtered
@@ -64,203 +38,25 @@ def write_calls_tsv(
     result: SampleResult, path: Path, *, min_mean_qv: float = DEFAULT_MIN_MEAN_QV,
     pool_meta: Path = DEFAULT_POOL_META,
 ) -> None:
-    """User-requested trimmed schema (2026-08-22): `sample_id` is dropped
-    since output filenames are now sample-prefixed (see cli.py); `allele` is
-    Stage 5's own name (novelty tag included) rather than Stage 4's
-    `called_allele`; `candidate_null`, `ambiguity_set`, and `min_qv` are
-    dropped from this file -- still available on `HaplotypeCallResult`
-    itself for any caller that needs them.
+    """One row per haplotype call, then C4 rows.
 
-    **`template_allele` column, added 2026-09-03, user-requested.**
-    Stage 4's own `called_allele` (`HaplotypeCallResult.called_allele`) --
-    the nearest catalogued IPD allele, *never* carrying a `:new` suffix --
-    exposed as its own column, immediately before `allele`. Motivation
-    (user's own, echoing invariant 8): Immuannot's own novelty call (the
-    `:new` tag in this project's truth GTFs) is itself an inference, not
-    perfect ground truth -- benchmarking against `allele` alone conflates
-    "did we pick the right nearest allele" with "did we agree with
-    Immuannot's own novelty judgment" into one pass/fail. `template_allele`
-    lets a scorer compare template-to-template (nearest-allele accuracy,
-    independent of any novelty-calling disagreement between hlaont and
-    Immuannot) and separately compare `allele`/`taxonomy` against truth's
-    own `:new` tag (novelty-calling accuracy) rather than only the
-    conflated version. For an `exact` call, `template_allele` and `allele`
-    are identical by construction (stages/novelty.py's own `proposed_name`
-    is `display_allele` unchanged when there are zero variants) -- this
-    column only diverges from `allele` when a real difference triggered a
-    `novel:*`/`extension` tag. Blank for the C4/C4A/C4B/C4AL/C4AS/C4BL/C4BS
-    rows below, same as every other per-haplotype-only column.
+    `template_allele` is the nearest catalogued allele (Stage 4's
+    called_allele, never `:new`), shown as the source GTF's real name for
+    assembly-extracted genes and as the matched partial allele for
+    `extension:partial`; `allele` is Stage 5's name. Calls with mean QV
+    below `min_mean_qv` are omitted (listed in qc.json).
 
-    **Assembly-extracted genes (HLA-N/P/T/U/W/Y/R), fixed same day, same
-    user report.** `called_allele` for these genes is a content-hashed pool
-    accession (resources/templates/assembly_sources.py, e.g.
-    "HLA-W*asm3e9f0510aa") -- there is no real IPD catalogue entry to name
-    it after. `load_gtf_template_allele()` (stages/novelty.py) looks up
-    ref.gene.meta.tsv.gz's `gtf_template_allele` column -- the *source*
-    hla_seq/ GTF's own gene-line `template_allele` attribute for the exact
-    real haplotype sequence this accession was extracted from (e.g.
-    "HLA-W*01:01:01:05") -- and that real name is written into this column
-    instead, falling back to `called_allele` unchanged when no such lookup
-    exists (every ordinary IPD-sourced allele, and any assembly-extracted
-    record built before this column existed). Purely a display swap: the
-    accession itself (`called_allele`) is still what every other stage
-    used internally, and `allele`/`taxonomy` are computed exactly as
-    before -- this only changes what this one column prints.
+    `haplotype` column (phased runs only): the HP value for phased genes,
+    "unphased" otherwise.
 
-    **`extension:partial` calls, added 2026-09-21, user-requested.** Same
-    display-swap idea, one step further: when Stage 5 classifies a
-    haplotype as `extension:partial` (stages/novelty.py's
-    `_partial_extension_match()` -- the consensus's CDS exactly matches a
-    *different* IPD allele than `called_allele`, one only ever catalogued
-    as a partial/exon-subset record, e.g. real HG03009/HLA-C*07:457), this
-    column shows that matched allele (`extension_allele`) instead of the
-    genomic template Stage 2/4 actually aligned/built consensus against.
-    `called_allele` itself, and everything Stage 3/4 computed from it, are
-    unchanged -- only this display column and (already, unrelated to this
-    change) `allele`/`taxonomy` reflect the partial match.
-
-    **`haplotype_index` removed, 2026-08-27, user-requested.** This
-    pipeline never phases reads -- Stage 2's per-haplotype split is an
-    arbitrary assignment order out of template-set selection, not a real
-    maternal/paternal phase, so a column named `haplotype_index` implying
-    real phase would misrepresent what the tool actually did. Real phasing
-    is tracked as a future, separate pipeline (see the development notes' "Next"
-    list), not something this column can honestly claim in the meantime.
-
-    **User-requested, 2026-08-26/27: C4/C4A/C4B rows, revised repeatedly
-    per follow-up feedback (see the development notess for the full
-    back-and-forth).** C4A/C4B never produce a `HaplotypeCallResult`
-    (DESIGN.md S2f: no star-allele nomenclature, no template pool, no
-    per-haplotype consensus to report -- `typing_module: structural` genes
-    are excluded from the manifest the Stage 2-5 loop walks), so most of
-    this schema's columns -- built around a per-haplotype template call --
-    simply don't apply. **Final shape:** three extra rows --
-    `C4_REPORTED_GENE` ("C4", stages/c4_cn.py's combined, length-corrected
-    total CN) and `"C4A"`/`"C4B"` (stages/c4_form.py's
-    `estimate_c4_per_gene_cn()` -- a proportional split of that total by
-    the exon 26 vote ratio, not an independent per-gene measurement; that
-    function's own docstring has the full reasoning and precision
-    caveats) -- each leaving every per-haplotype column empty except `cn`,
-    `n_reads_assigned`, and `c4_form_note`. `n_reads_assigned` is
-    `c4_cn.depth` for the "C4" row and `C4AbCall.n_a`/`n_b` for "C4A"/
-    "C4B" -- it stays the real read tally regardless of whether `cn` could
-    be computed, since the two columns answer different questions and one
-    being unavailable must not blank the other. `c4_form_note` carries
-    stages/c4_form.py's long-vs-short read tally (`long=<n_long>,
-    short=<n_short>`, identical across all three rows since it's a
-    locus-wide measurement, not something resolved per A/B) so a reader
-    can see at a glance whether the sample's C4 reads are all long, all
-    short, or a real mix -- full uninformative-read counts and fractions
-    for both axes stay in `qc.json` only.
-
-    **`haplotype` column, phased mode only (DESIGN.md S10.7).** Added
-    *only* when `result.phasing_routing is not None` (i.e. the sample was
-    run through `run_sample_phased()`) -- an unphased run's schema is
-    byte-identical to before this existed, preserving the same reasoning
-    that removed `haplotype_index` from this file in the first place: a
-    column implying real phase must not appear unless the phase is real.
-    When present, it carries the real `HP` tag value (1/2) for a gene
-    routed "phased" (`HaplotypeCallResult.haplotype_index` is set to that
-    same real value by `run_sample_phased()`), or the literal string
-    `"unphased"` for a gene that fell back to the ordinary combinatorial
-    path -- never a fabricated label for a real haplotype the tool cannot
-    actually back up. The whole-sample "C4"/"C4A"/"C4B" rows carry
-    `"unphased"` too in phased mode (Phase 1/2's aggregate computation is
-    the same "unphased" computation regardless of whether C4 also got a
-    per-haplotype breakdown, see below) -- never blank, so a reader can
-    filter on this column uniformly.
-
-    **`min_mean_qv` (default 30.0), user-requested 2026-08-27.** A
-    haplotype call whose `mean_qv` falls below this is excluded from this
-    table entirely -- real HG00097 finding: `HLA-DRB4*01:new` at 4 reads,
-    `mean_qv` 5.0, 37 variants, cleared every read-count floor upstream but
-    is still noise, not a call worth surfacing in the primary summary.
-    Never silently dropped project-wide: `write_qc_json()` reports the
-    same excluded calls (gene, haplotype label, mean_qv) under
-    `calls_filtered_low_mean_qv` with the identical threshold, and
-    `consensus.fa`/`variants.vcf` are untouched (still every haplotype,
-    unfiltered) -- this filter is calls.tsv-only, a display decision, not
-    a claim that the underlying consensus/variant calls don't exist.
-
-    **User-requested, 2026-08-26/27, per-haplotype C4A/C4B added
-    2026-08-27 (DESIGN.md S10.6), revised repeatedly per follow-up feedback
-    (see the development notess for the full back-and-forth).** C4A/C4B
-    never produce a `HaplotypeCallResult` (DESIGN.md S2f: no star-allele
-    nomenclature, no template pool, no per-haplotype consensus to report),
-    so most of this schema's columns -- built around a per-haplotype
-    template call -- simply don't apply. **Base shape (both modes):**
-    three rows -- `C4_REPORTED_GENE` ("C4", stages/c4_cn.py's combined,
-    length-corrected total CN) and `"C4A"`/`"C4B"` (stages/c4_form.py's
-    `estimate_c4_per_gene_cn()` -- a proportional split of that total by
-    the exon 26 vote ratio, not an independent per-gene measurement) --
-    each leaving every per-haplotype column empty except `cn`,
-    `n_reads_assigned`, and `c4_form_note`. `n_reads_assigned` is
-    `c4_cn.depth` for the "C4" row and `C4AbCall.n_a`/`n_b` (sample-wide)
-    for "C4A"/"C4B". **Phased mode, extra rows when
-    `result.c4_phased_ab_calls` is populated** (i.e. C4A/C4B's own
-    `GenePhaseRouting.routing == "phased"`, S10.6): one additional `"C4A"`
-    and `"C4B"` row per haplotype that cleared the routing floor,
-    `n_reads_assigned` that haplotype's own vote count, `c4_form_note` that
-    haplotype's own long-vs-short tally, `haplotype` the real HP value --
-    additive to, not a replacement for, the sample-wide aggregate rows
-    above (a reader filtering on `haplotype != "unphased"` sees only the
-    genuinely phase-resolved rows). **`cn`, added 2026-08-28 (DESIGN.md
-    S10.5/S10.6, Phase 1 per-haplotype), populated only when this
-    haplotype's own PS-matched calibrator panel produced a real estimate**
-    (`stages/pipeline.py`'s `run_sample_phased()` docstring has the full
-    PS-matching mechanism) -- blank, never a guess, otherwise. When
-    populated, an extra per-haplotype `"C4"` row also appears (mirroring
-    the sample-wide aggregate row's shape: `cn` = that haplotype's own
-    length-corrected total, `n_reads_assigned` = that haplotype's own C4
-    depth); `"C4A"`/`"C4B"`'s own `cn` is that total split by the same
-    haplotype's own A-vs-B vote ratio (`estimate_c4_per_gene_cn()`,
-    unchanged, just called per haplotype). `min_mean_qv` does not apply to
-    any C4 row (no `mean_qv` is ever computed for them).
-
-    **2026-09-01, user-directed: the chr17-control mechanism
-    (`stages/c4_chr17_cn.py`) is now production for C4's sample-wide
-    (unphased) numbers.** When `result.c4_chr17_control` is populated
-    (every unphased run computes it; phased runs also carry it forward on
-    the shared aggregate, since the per-haplotype C4 path has not been
-    moved onto this mechanism yet -- module docstring on `SampleResult.
-    c4_chr17_control`), the `"C4"` row's `cn` comes from `total_cn_
-    estimate` (real per-base `samtools depth` against a real, external
-    chr17 control region -- the development notes' own session log found this
-    measurably closer to real truth than the calibrator-panel total below)
-    rather than `gene_cn["C4"]` (`stages/c4_cn.py`'s older mechanism,
-    still computed every run and still visible in `qc.json`'s own
-    `"gene_cn"` block as a live cross-check, not silently dropped -- just
-    no longer what `calls.tsv` reports as the headline number). Four new
-    rows, `"C4AL"`/`"C4AS"`/`"C4BL"`/`"C4BS"`, report each real form's own
-    directly-measured `cn`/`n_reads_assigned` (`stages/c4_chr17_cn.py`'s
-    own per-form BAM regions, not a proportional split like `"C4A"`/
-    `"C4B"` above) -- additive to, not a replacement for, the existing
-    `"C4A"`/`"C4B"` rows, since the two answer different questions (a
-    combined-form vote-ratio split vs. a directly-measured per-form
-    count). Falls back to the pre-2026-09-01 `gene_cn["C4"]`-based `"C4"`
-    row (no C4AL/C4AS/C4BL/C4BS rows at all) when `c4_chr17_control` is
-    `None` -- a caller that never computed it (e.g. a test fixture
-    predating this revision), not a silent gap in production.
-
-    **2026-09-01, same day, user-directed: `"C4A"`/`"C4B"` rows dropped
-    from this file entirely, sample-wide and per-haplotype alike.** Every
-    paragraph above describing a `"C4A"`/`"C4B"` row is historical --
-    superseded by this note, not deleted, per this project's own
-    conventions. Rationale: those rows were a proportional split of the
-    `"C4"` total by `estimate_c4_per_gene_cn()`'s exon-26 vote ratio, not
-    an independent measurement -- once `"C4AL"`/`"C4AS"`/`"C4BL"`/
-    `"C4BS"` existed as real, directly-measured, chr17-control-normalised
-    per-form numbers (this file's own paragraph immediately above), the
-    coarser A-vs-B split answered a strictly weaker version of the same
-    question (`cn_a` is recoverable as `C4AL + C4AS`, `cn_b` as
-    `C4BL + C4BS`, when both per-form estimates exist). `result.
-    c4_ab_call`/`c4_per_gene_cn`/`c4_phased_ab_calls`/
-    `c4_phased_per_gene_cn` are untouched on `SampleResult` and still
-    populated every run (`stages/pipeline.py` unchanged) -- only this
-    file's row output changed; `qc.json` (`write_qc_json()`) still reports
-    the vote-ratio split in full, so the underlying measurement is not
-    lost, just no longer duplicated into `calls.tsv`. The per-haplotype
-    `"C4"` row (phased mode) is otherwise unchanged."""
+    C4 rows fill only gene/cn/n_reads_assigned/c4_form_note
+    (`long=<n>,short=<n>`):
+    - "C4", then C4AL/C4AS/C4BL/C4BS from the chr17-control mechanism
+      (integer joint call if available, else continuous estimates);
+    - if no chr17-control result, a single "C4" row from gene_cn["C4"];
+    - phased runs: an extra per-haplotype "C4" row when that haplotype has
+      a C4 CN.
+    The A/B vote-ratio split is reported only in qc.json."""
     phased_mode = result.phasing_routing is not None
     cols = [
         "gene", "cn", "template_allele", "allele", "taxonomy", "n_fields",
@@ -274,18 +70,7 @@ def write_calls_tsv(
         fh.write("\t".join(cols) + "\n")
         for c in kept_calls:
             if c.taxonomy == "extension:partial" and c.extension_allele is not None:
-                # The real genomic template used to align/build consensus
-                # (c.called_allele) is Stage 2/4's own alignment anchor, not
-                # the actual known allele -- stages/novelty.py's
-                # extension:partial gate already confirmed the consensus's
-                # CDS exactly matches a *different*, real (if only
-                # partially-catalogued) IPD allele over its own covered
-                # range. Same display-swap precedent as the assembly-
-                # extraction gtf_template_allele case below: purely a
-                # display column, called_allele is still what every other
-                # stage used internally, and allele/taxonomy are computed
-                # exactly as before -- this only changes what this one
-                # column prints.
+                # CDS matches a partially catalogued allele: display it.
                 display_template_allele = c.extension_allele
             else:
                 display_template_allele = load_gtf_template_allele(c.called_allele, pool_meta) \
@@ -312,13 +97,7 @@ def write_calls_tsv(
         c4_extra_col = ["unphased"] if phased_mode else []
 
         if chr17 is not None:
-            # 2026-09-01: chr17-control total supersedes gene_cn["C4"] here
-            # (module docstring) -- the older mechanism stays computed and
-            # visible in qc.json's own "gene_cn" block, just not repeated
-            # in this row.
-            # 2026-09-25, user-requested: report the integer joint call
-            # (c4_chr17_cn.call_c4_forms_jointly) when it exists; the
-            # continuous estimates stay in qc.json's "c4_chr17_control".
+            # chr17-control total (integer joint call when available).
             joint = result.c4_joint_call
             if joint is not None:
                 cn_total = str(joint.total)
@@ -344,20 +123,7 @@ def write_calls_tsv(
             row = [C4_REPORTED_GENE, cn_total, "", "", "", "", "", str(c4_cn.depth), "", "", "", form_note] + c4_extra_col
             fh.write("\t".join(row) + "\n")
 
-        # DESIGN.md S10.5/S10.6: per-haplotype "C4" row, phased mode only,
-        # additive to the aggregate rows above. Only appears when this
-        # haplotype's PS-matched calibrator panel produced a real estimate
-        # (stages/pipeline.py's run_sample_phased() docstring) -- blank, not
-        # a guess, otherwise. 2026-09-01, user-requested: "C4A"/"C4B" rows
-        # (the proportional A-vs-B/long-vs-short vote-ratio split) dropped
-        # from calls.tsv entirely, sample-wide and per-haplotype alike --
-        # "C4AL"/"C4AS"/"C4BL"/"C4BS" (directly measured, chr17-control-
-        # normalised) already answer the same question with a real
-        # per-form measurement instead of a split of the "C4" total, so the
-        # older, coarser breakdown is redundant. `c4_form_call`/
-        # `c4_per_gene_cn`/`c4_phased_ab_calls`/`c4_phased_per_gene_cn`
-        # remain on `SampleResult` and in qc.json -- only this file's own
-        # rows change.
+        # Per-haplotype "C4" rows (phased mode).
         if phased_mode and result.c4_phased_ab_calls:
             for hp_val in sorted(result.c4_phased_ab_calls):
                 hp_form = (result.c4_phased_form_calls or {}).get(hp_val)
@@ -370,19 +136,9 @@ def write_calls_tsv(
 
 
 def write_consensus_fasta(result: SampleResult, fasta_path: Path, qv_path: Path) -> None:
-    """`fasta_path` gets one record per haplotype copy (`sequence`);
-    `qv_path` is a long-format companion (record_id, pos, qv) rather than a
-    FASTQ quality string -- avoids phred+33 ASCII encoding entirely
-    (consensus.py's QV can be int-valued past the printable-ASCII-safe
-    range some tools assume) and is trivial to parse without a FASTQ
-    library.
-
-    `result.haplotype_calls` and `result.consensus_records` are appended in
-    lockstep, one pair per haplotype, inside stages/pipeline.py's own loop
-    -- zipping them (rather than re-deriving a haplotype index from
-    `.index()`, which would give the wrong, flat-across-all-genes position
-    and rely on dataclass equality) is what recovers each consensus's real
-    per-gene haplotype_index."""
+    """One FASTA record per haplotype copy; QVs go to a long-format TSV
+    (record_id, pos, qv) rather than a FASTQ quality string.
+    `haplotype_calls` and `consensus_records` are parallel lists."""
     with open(fasta_path, "w") as fasta_fh, open(qv_path, "w") as qv_fh:
         qv_fh.write("record_id\tpos\tqv\n")
         for call, hap in zip(result.haplotype_calls, result.consensus_records):
@@ -412,10 +168,7 @@ def _vcf_records_for_haplotype(
             pos, ref, alt = anchor_pos if anchor_pos >= 1 else 1, anchor_base + v.ref, anchor_base
         else:  # substitution
             pos, ref, alt = v.pos, v.ref, v.alt
-        # QUAL is always "." -- NoveltyVariant carries no per-base QV
-        # (novelty.classify() only receives the raw consensus string, not
-        # stages/consensus.py's HaplotypeConsensus.qv array it came from).
-        # Flagged, not faked: see module docstring's deferred-work note.
+        # QUAL is "." (no per-base QV on novelty variants).
         lines.append(f"{called_allele}\t{pos}\t.\t{ref}\t{alt}\t.\tPASS\t{info}")
     return lines
 
@@ -457,10 +210,7 @@ def _c4_per_haplotype_entry(
         "n_long": None if form is None else form.n_long,
         "n_short": None if form is None else form.n_short,
         "long_fraction": None if form is None else form.long_fraction,
-        # DESIGN.md S10.5/S10.6, added 2026-08-28: per-haplotype total C4
-        # CN (Phase 1) -- None when this haplotype's own PS-matched
-        # calibrator panel had no usable gene (stages/pipeline.py's
-        # run_sample_phased() docstring), not a guess.
+        # None when no PS-matched calibrator gene was available.
         "cn": None if cn is None else cn.cn_estimate,
         "cn_ci_low": None if cn is None else cn.ci_low,
         "cn_ci_high": None if cn is None else cn.ci_high,
@@ -506,11 +256,7 @@ def write_qc_json(
         "failures": [
             {"gene": f.gene, "reason": f.reason} for f in result.failures
         ],
-        # User-requested, 2026-08-27: calls.tsv's own mean_qv floor
-        # (write_calls_tsv, same min_mean_qv/DEFAULT_MIN_MEAN_QV) excludes
-        # a row entirely rather than merely flagging it -- reported here so
-        # a low-confidence call never simply vanishes with no record
-        # anywhere (development notes: "silent failure... is worse than a crash").
+        # Calls omitted from calls.tsv by the mean-QV floor.
         "calls_filtered_low_mean_qv": [
             {
                 "gene": c.gene, "haplotype_index": c.haplotype_index,
@@ -518,10 +264,7 @@ def write_qc_json(
             }
             for c in filtered_calls
         ],
-        # DESIGN.md S10.7/user-requested: which genes went through the
-        # phased per-haplotype path vs the unphased fallback, and why --
-        # None for an ordinary run_sample() (unphased) call, one entry per
-        # resources/genes.yaml manifest gene for a run_sample_phased() call.
+        # Per-gene phasing routing; None for unphased runs.
         "phasing": None if result.phasing_routing is None else {
             gene: {
                 "routing": r.routing,
@@ -540,10 +283,7 @@ def write_qc_json(
                 "n_b": result.c4_ab_call.n_b,
                 "n_uninformative": result.c4_ab_call.n_uninformative,
                 "a_fraction": result.c4_ab_call.a_fraction,
-                # 2026-08-27, user-requested: CN_A/CN_B, a proportional
-                # split of gene_cn["C4"]'s total by a_fraction -- see
-                # stages/c4_form.py's estimate_c4_per_gene_cn() docstring
-                # for the derivation and its real precision caveats.
+        # CN_A/CN_B: gene_cn["C4"] split by a_fraction.
                 "cn_a": None if result.c4_per_gene_cn is None else result.c4_per_gene_cn.cn_a,
                 "cn_a_ci_low": None if result.c4_per_gene_cn is None else result.c4_per_gene_cn.cn_a_ci_low,
                 "cn_a_ci_high": None if result.c4_per_gene_cn is None else result.c4_per_gene_cn.cn_a_ci_high,
@@ -557,18 +297,8 @@ def write_qc_json(
                 "n_uninformative": result.c4_form_call.n_uninformative,
                 "long_fraction": result.c4_form_call.long_fraction,
             },
-            # DESIGN.md S10.6, user-requested 2026-08-27: per-haplotype
-            # A-vs-B/long-vs-short vote tallies, keyed by real HP value --
-            # None unless C4_REPORTED_GENE's own GenePhaseRouting.routing
-            # (see "phasing" above) is "phased". A haplotype can carry both
-            # A and B (or long and short) votes if it has its own internal
-            # RCCX duplication (stages/pipeline.py's own docstring) -- not
-            # a hard per-haplotype genotype call, the same honest-tally
-            # stance as the sample-wide a_vs_b/long_vs_short blocks above.
-            # `cn`/`cn_a`/`cn_b` (+ CIs), added 2026-08-28 (DESIGN.md
-            # S10.5/S10.6): this haplotype's own total/per-gene C4 CN, None
-            # when its PS-matched calibrator panel had no usable gene
-            # (run_sample_phased()'s own docstring has the full mechanism).
+            # Per-HP C4 tallies and CN; None unless C4 routed phased. A
+            # haplotype with an RCCX duplication can show both A and B.
             "per_haplotype": (
                 None if not result.c4_phased_ab_calls
                 else {
@@ -581,20 +311,13 @@ def write_qc_json(
                 }
             ),
         },
-        # 2026-09-01, user-directed: the chr17-control mechanism
-        # (stages/c4_chr17_cn.py), now production for calls.tsv's own "C4"
-        # row (see write_calls_tsv's own docstring) -- real per-form
-        # samtools-depth CN/read counts plus the external control's own
-        # depth/read count, for full traceability of what the calls.tsv
-        # numbers were computed from. None for a run that never computed
-        # it (module docstring on SampleResult.c4_chr17_control).
+        # chr17-control per-form C4 CN and control depth; None if not computed.
         "c4_chr17_control": None if result.c4_chr17_control is None else {
             "control_depth": result.c4_chr17_control.control_depth,
             "control_n_reads": result.c4_chr17_control.control_n_reads,
             "total_cn_estimate": result.c4_chr17_control.total_cn_estimate,
-            # 2026-09-25: count-based total and its inputs; the pre-2026-09-25
-            # depth-based numbers kept alongside as a cross-check
-            # (stages/c4_chr17_cn.py module docstring).
+            # Count-based total and inputs; depth-based numbers kept as a
+            # cross-check.
             "depth_total_cn_estimate": result.c4_chr17_control.depth_total_cn_estimate,
             "n_reads_5p_window": result.c4_chr17_control.n_reads_5p_window,
             "reads_per_copy": result.c4_chr17_control.reads_per_copy,

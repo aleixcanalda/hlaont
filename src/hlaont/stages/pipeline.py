@@ -1,183 +1,25 @@
 """Orchestration: Stage 0 -> assign -> cn -> genotype -> consensus ->
-hla_typing -> novelty, over every gene in the manifest (development notes
-invariant 5 -- never a hardcoded gene list; whatever resources/genes.yaml
-lists is what gets attempted).
+hla_typing -> novelty, over every manifest gene (invariant 5).
 
-This is the "Next" item the development notes' own progress log names: individual
-stage modules existed and were unit-tested, but nothing ran them together
-over a real sample end to end. `run_sample()` is that wiring.
+Every non-excluded, non-structural gene is attempted. A gene with a positive
+CN but no recruited reads, no CN estimate, or CN rounding to 0 is recorded
+in `SampleResult.failures`, never silently dropped.
 
-**CN estimate is the fan-out point.** Every non-excluded, non-structural
-gene in the manifest is considered, not just ones stages/assign.py happened
-to build a matrix for -- a gene with a positive CN estimate but *zero*
-reads recruited to its own matrix is a distinct, explicitly reported
-failure ("template-recruitment failure candidate", DESIGN.md S2c's HLA-Y
-warning), not silently skipped the same way as a gene with no calibrator
-signal at all. Both are recorded in `SampleResult.failures`, never a
-silent omission from calls.tsv. CN is estimated per gene, not pooled across
-resources/genes.yaml's `segment` field (stages/cn.py's own docstring has
-the full rationale/revision history) -- each gene's estimate depends only
-on its own read depth.
+CN sizing: `cn_round` (default `_round_cn_estimate`) then clamp to `max_cn`
+(default 2); depth noise past 2 is far likelier than real duplication.
+Raw `cn_estimate`/CI stay in `gene_cn`. Genes with `low_cn_floor`
+(DRB3/4/5) below the floor are treated as absent.
 
-CN is rounded to the nearest integer to size Stage 2's template-set search
-(`cn_round`, injectable, defaults to `_round_cn_estimate` -- see that
-function's own docstring for the 2026-08-23 asymmetric-threshold revision)
--- DESIGN.md documents CN as an estimate with a confidence interval, not an
-integer, and this rounding step is a provisional policy choice (invariant
-11: not fitted or re-derived against real data yet), flagged here rather
-than presented as principled.
+Homozygous collapse: Stage 2 always returns `cn` distinct alleles, so a
+call collapses to its single best allele (cn kept) when
+- LRT < `min_heterozygous_lrt` (10.0), or, after consensus,
+- any haplotype has < `min_reads_per_haplotype` (3) reads, or
+- minor/major read ratio < `min_haplotype_read_ratio` (0.1).
+A high LRT alone can come from diffuse sub-read signal with no read on the
+second allele (HLA-B). All three thresholds are provisional (invariant 11).
 
-**Revised 2026-07-27, real HG00097 ONT benchmark -- `max_cn` (default 2) and
-LRT-based homozygous collapse.** Two real, distinct failure modes showed up
-running against real data for the first time (the development notes' own "Next" item):
-(1) a noisy point estimate rounding *up* past the true CN -- HLA-C's
-depth-based estimate (2.83, CI 1.76-3.89) rounded to 3, HLA-DRB1's (3.67,
-CI 2.57-4.77) rounded to 4 -- forcing Stage 2 to search for 3rd/4th
-distinct alleles that do not exist, producing visibly spurious low-read,
-high-variant-count "haplotypes" (DRB1's 3rd/4th calls: 2 and 10 reads, 589
-and 157 variants against their own selected template -- noise, not calls).
-`cn_int` is now clamped to `max_cn` after rounding -- not a claim that no
-HLA gene here can ever legitimately exceed 2 copies (RCCX/C4 genuinely can,
-DESIGN.md S2f, but C4A/C4B are already out of this function's scope, module
-docstring in stages/cn.py), rather that real depth-estimate noise inflating
-past 2 is far better evidenced right now than genuine >2-copy duplication
-in this manifest, and the raw uncapped `cn_estimate`/CI remain untouched in
-`SampleResult.gene_cn` for diagnosis -- only the search-sizing integer is
-clamped. (2) `select_template_set()`'s `cn=2` search always returns two
-*distinct* alleles (`itertools.combinations` cannot repeat one), even for a
-genuinely homozygous sample -- stages/consensus.py's own docstring already
-named this gap and exactly how to close it ("a manufactured single-allele
-TemplateCall... belongs to the orchestration layer once it exists"): when
-`TemplateCall.lrt_statistic` falls below `min_heterozygous_lrt` (default
-10.0, chosen between the two reference points stages/test_genotype.py's own
-existing tests already assert -- a real heterozygous pair scores >20, a
-synthetic homozygous sample scores <5 -- not independently fitted, invariant
-11), the call is collapsed to `call.single_allele` at weight 1.0 before
-Stage 3 runs, so every read in the gene's matrix builds *one* higher-depth
-consensus instead of being split across two haplotype clusters where one is
-pure noise. `cn_int` itself (the true estimated copy number) is still
-recorded on that single reported row -- collapsing removes a spurious
-second *distinct-allele* call, not the fact that two copies are present.
-
-**Same session: `genes.yaml`'s new `low_cn_floor` field (DRB3/4/5, user's
-own hypothesis).** DRB1 sits in the same physical block and is essentially
-always present at real depth (its own raw estimate was 3.67 the same
-benchmark run); a thin raw estimate for its presence/absence paralogs here
-is plausibly cross-mapped DRB1 read leakage, not genuine partial presence
--- `assign.build_gene_matrices()`'s new `max_read_mismatch_rate` gate
-(its own docstring) is the read-level mitigation for that same leakage,
-this is a CN-decision-level backstop on top of it. A gene with
-`low_cn_floor` set is reported as CN=0 (through the same `cn_int < 1`
-failure path every other absent gene uses, invariant 4 -- not a silent
-drop) when its raw estimate falls below that floor, rather than rounding
-normally to 1. Data-driven per invariant 5 -- the gene list lives in
-`genes.yaml`, not a hardcoded set here.
-
-**Revised 2026-07-30 -- `min_reads_per_haplotype`, real HG00097 finding
-after the row_span scoring fix.** `min_heterozygous_lrt` alone turned out
-not to be the right test: real HLA-B data (truth homozygous
-`07:02:01:01`/`07:02:01:01`) produced `lrt_statistic=847` -- nowhere near
-the 10.0 collapse threshold -- yet the hard read partition
-(`stages/consensus.py`'s `assign_reads_to_haplotypes`, argmax
-responsibility) put *zero* of 61 real reads on the second allele
-(`HLA-B*40:01:02:40`). A diffuse, sub-single-read signal spread thinly
-across many reads' marginal preferences is enough to lift a continuous EM
-mixture weight above zero and inflate the LRT, without any individual read
-ever actually crossing over -- the LRT measures whether the aggregate
-likelihood improved at all, not whether a real second haplotype exists.
-Left unchecked, `stages/consensus.py`'s own zero-observation fallback
-(`_call_substitution_or_deletion`'s `if not observations: return
-template_base, 0.0, 0`) then builds that phantom haplotype's "consensus"
-as a verbatim copy of its seed template, QV=0 throughout -- which Stage 4
-confidently re-types as an exact match to itself, a real-looking call with
-zero read evidence behind it. `n_reads_assigned` (already computed by
-`build_gene_consensus`, no extra alignment work) is the direct signal the
-LRT is a proxy for: after building consensus, if any haplotype in a
-`cn > 1` call has fewer than `min_reads_per_haplotype` reads actually
-assigned to it, the call is collapsed to `call.single_allele` the same way
-the LRT path already does (factored into `_collapse_to_single_allele`,
-shared by both checks) and consensus is rebuilt once more against the
-collapsed call. The LRT check stays as a cheap first pass (skips a wasted
-consensus build for genuinely low-LRT genes); this is a second,
-read-count-based check afterward for the cases the LRT does not catch.
-
-`min_reads_per_haplotype` default is 3, not 2 -- revised same session,
-against a second real case. An initial 2 fixed HLA-B (the case above) but
-left a real MICA artifact through: its phantom second haplotype had
-*exactly* 2 reads, `min_qv=0` (real coverage gaps) and 48 variants against
-its own seed template -- unambiguous noise, just one read short of the
-first guess's floor. Still not independently fitted (invariant 11) --
-raised on confirmed evidence from a second real gene, not re-derived from
-first principles.
-
-**Same session, `min_haplotype_read_ratio` (default 0.1), user-requested.**
-`min_reads_per_haplotype` is an absolute floor -- it does nothing for a
-gene with genuinely high depth where the *minor* haplotype's read count
-clears 3 in absolute terms but is still a small fraction of the major
-haplotype's, e.g. 8 reads vs 400: not noise by the absolute floor, but
-still evidence the second "distinct" allele is a trickle of cross-mapped
-or misassigned reads riding on a real, dominant homozygous signal rather
-than a genuine second haplotype. After the two existing checks, if a
-`cn > 1` call's two `n_reads_assigned` counts have `min(counts) /
-max(counts) < min_haplotype_read_ratio`, collapse the same way (shared
-`_collapse_to_single_allele`) -- the higher-depth haplotype's allele is
-`call.single_allele` already (it is independently the best-supported
-single allele across every read in the matrix, not merely the survivor of
-the pair), so collapsing reports that allele as homozygous, not an
-arbitrary pick between the two. 0.1 is the user's own stated threshold,
-not fitted against real data -- provisional, invariant 11, same as the
-other two collapse constants above.
-
-**Same session, `cn_model`-aware search sizing, user-requested.** Real
-HG00097 data showed a class of false-homozygous call distinct from the
-LRT/floor/ratio gap above: TAP1, TAP2, HLA-DQB2, HLA-DPA2, HLA-DPB1 and
-HLA-DQA1/DQA2 all have raw `cn_estimate`s landing at 1.3-1.7 on modest
-depth (~40-55 reads) -- Poisson counting noise on the depth-ratio
-estimator (their 95% CIs mostly straddle 2.0; a length-bias hypothesis was
-checked directly against real depth/consensus-length data and rejected,
-r=0.067), not evidence of real hemizygosity. Plain `round()` sends these
-to `cn_int=1`, and `select_template_set()`'s cn=1 path returns immediately
-with a trivial single-allele call (`lrt_statistic` hardcoded to 0.0) --
-the gene never even reaches a cn=2 combination search, so none of the
-collapse checks above get a chance to run either way; a real second
-haplotype is structurally unreachable regardless of how much read evidence
-supports it. `genes.yaml`'s own `cn_policy` note already says `cn_model`
-is meant as "an expected-pattern label for CI width... never a hardcoded
-assumption" and that any deviation from a gene's typical pattern "requires
-segment-level support or reference-space corroboration before being
-reported" -- corroboration this FASTQ-path run cannot provide (module
-docstring's own invariant-4 framing). Read the other way: for a
-`cn_model: diploid_typical` gene (`stages/cn.py`'s `GeneManifestEntry`,
-newly exposed this session), the raw estimate is now used *only* to gate
-presence vs absence (rounds to 0 -> absent, same failure path as before);
-once present, `cn_int` defaults to `max_cn` unconditionally rather than
-the noisy round-and-clamp, so the gene always gets a real cn=2 search and
-the LRT/`min_reads_per_haplotype`/`min_haplotype_read_ratio` checks above
--- already built for exactly this decision on the CN-variable genes -- are
-what settle homozygous-vs-heterozygous, not a pre-Stage-2 rounding
-artifact. `variable_0_2`/`variable` genes (DRB3/4/5, MICA, the class I
-pseudogenes) are untouched -- a real CN=1 is a common, genuine state for
-these (DRB3 present on only one real haplotype in this very sample) and
-must stay distinguishable, so they keep the original round-and-clamp path.
-**Known tradeoff, flagged not hidden:** a diploid_typical gene with a real
-single-copy deletion now always searches and reports `cn=2` even when
-truth is 1 -- but per the `cn_policy` note there was never a corroboration
-path that would justify reporting anything other than the typical pattern
-from a bare depth ratio anyway, so this is a more consistent application
-of the existing honesty bar, not a new relaxation of it. New unit test in
-`stages/test_pipeline.py`: a diploid_typical fixture with `cn_estimate`
-~1.4 and real heterozygous 2-allele read support, confirming the pipeline
-now searches cn=2 and recovers both alleles (the old round-and-clamp path
-would have searched cn=1 and never looked).
-
-**Per-gene/per-haplotype fault isolation.** A single template-thin
-pseudogene failing Stage 2 (too few candidates for its estimated CN) must
-not take down a 36-gene sample-wide run -- population scale means this
-happens routinely, not exceptionally. Failures are caught narrowly
-(`ValueError`, the only exception type any downstream stage module raises
-deliberately) and recorded in `SampleResult.failures` with a reason string;
-anything else propagates, since an unexpected exception type is a real bug,
-not a data-quality event this layer is designed to absorb.
+Fault isolation: only `ValueError` (what stage modules raise deliberately)
+is caught per gene/haplotype and recorded; anything else propagates.
 """
 from __future__ import annotations
 
@@ -298,70 +140,31 @@ class SampleResult:
     consensus_records: tuple[HaplotypeConsensus, ...]
     novelty_calls: dict[tuple[str, int], NoveltyCall]
     failures: tuple[GeneFailure, ...]
-    # DESIGN.md S2f Phase 2 (stages/c4_form.py) -- a factual read-count
-    # tally, not a hard genotype call, so a real run with e.g. zero C4
-    # reads at all still gets a real, empty-count call object here, never
-    # None; defaulted only so this doesn't become a required positional
-    # arg at every other SampleResult call site (there are none besides
-    # run_sample() itself today, but frozen-dataclass field ordering
-    # otherwise forces every field after it to also take a default).
+    # C4 Phase 2 read tallies (c4_form.py); never None in a real run.
     c4_ab_call: C4AbCall | None = None
     c4_form_call: C4FormLengthCall | None = None
-    # User-requested, 2026-08-27: CN_A/CN_B (a proportional split of the
-    # combined C4 CN above by the Phase 2 vote ratio -- see
-    # estimate_c4_per_gene_cn()'s own docstring). Same defaulting rationale
-    # as the two fields above.
+    # CN_A/CN_B: total C4 CN split by the Phase 2 vote ratio.
     c4_per_gene_cn: C4PerGeneCN | None = None
-    # DESIGN.md S10: one entry per resources/genes.yaml manifest gene, plus
-    # one extra entry keyed C4_REPORTED_GENE ("C4") for the combined
-    # C4A/C4B read pool's own routing decision (S10.6) -- only populated by
-    # run_sample_phased(). None means this sample was run unphased
-    # (run_sample()) and the distinction never arose.
+    # One entry per manifest gene plus "C4"; None for unphased runs.
     phasing_routing: "dict[str, GenePhaseRouting] | None" = None
-    # DESIGN.md S10.6: per-haplotype C4A/C4B form discrimination (Phase 2
-    # only -- vote tallies from stages/c4_form.py's classify_a_vs_b/
-    # classify_long_vs_short, re-run on each haplotype's own C4-informative
-    # reads). Keyed by real HP value (1/2); only present for haplotypes that
-    # cleared min_reads_per_haplotype. None unless C4_REPORTED_GENE's own
-    # GenePhaseRouting.routing == "phased".
+    # Per-haplotype C4 form tallies keyed by HP; None unless C4 routed phased.
     c4_phased_ab_calls: "dict[int, C4AbCall] | None" = None
     c4_phased_form_calls: "dict[int, C4FormLengthCall] | None" = None
-    # DESIGN.md S10.5/S10.6, added 2026-08-28: per-haplotype total C4 CN
-    # (Phase 1), keyed by real HP value -- only present for a haplotype
-    # whose own C4-informative reads cleared the phase-routing floor *and*
-    # whose per-haplotype calibrator panel had at least one usable gene
-    # (see run_sample_phased()'s own docstring for the PS-matching
-    # mechanism this requires; a haplotype can clear the first without the
-    # second, in which case its GeneCN.cn_estimate is None -- present but
-    # honestly uncertain, not a guess and not silently absent). None unless
-    # C4_REPORTED_GENE's own GenePhaseRouting.routing == "phased".
-    # gene_cn["C4"] remains the separate sample-wide aggregate regardless.
+    # Per-haplotype total C4 CN keyed by HP; cn_estimate is None when no
+    # calibrator gene shares C4's PS block. None unless C4 routed phased.
     c4_phased_cn: "dict[int, GeneCN] | None" = None
     c4_phased_per_gene_cn: "dict[int, C4PerGeneCN] | None" = None
-    # 2026-09-01, user-directed: the chr17-control mechanism
-    # (stages/c4_chr17_cn.py) -- real per-form (C4AL/C4AS/C4BL/C4BS)
-    # samtools-depth CN, now production (see write_calls_tsv's own
-    # docstring). Unphased only for now -- the phased C4 path above
-    # (c4_phased_cn/c4_phased_per_gene_cn) still uses the older,
-    # calibrator-panel mechanism; extending the chr17-control approach to
-    # per-haplotype C4 is real, unstarted follow-up work, not silently
-    # covered by this field.
+    # Per-form (C4AL/C4AS/C4BL/C4BS) chr17-control CN. Unphased only.
     c4_chr17_control: "C4Chr17ControlResult | None" = None
-    # 2026-09-25, user-directed: integer per-form C4 call from the chr17-
-    # control signals plus Phase 2's A/B votes (c4_chr17_cn.
-    # call_c4_forms_jointly). None whenever c4_chr17_control is None or has
-    # no count-based total. Unphased only, same as c4_chr17_control.
+    # Integer per-form C4 call (c4_chr17_cn.call_c4_forms_jointly). Unphased
+    # only; None without a count-based chr17-control total.
     c4_joint_call: "C4JointCall | None" = None
 
 
 @dataclass(frozen=True)
 class GenePhaseRouting:
-    """DESIGN.md S10.3: per-gene record of whether this gene's own
-    recruited reads were split by real HP/PS phase tags ("phased") or fell
-    back to the ordinary unphased combinatorial path ("unphased_fallback"),
-    and why -- user-requested, so this is inspectable in qc.json rather than
-    only re-derivable from re-reading the code.
-    """
+    """Per-gene record of whether the gene was typed per HP haplotype
+    ("phased") or via the unphased path ("unphased_fallback"), and why."""
 
     gene: str
     routing: str  # "phased" | "unphased_fallback"
@@ -370,26 +173,14 @@ class GenePhaseRouting:
     n_reads_hp1: int
     n_reads_hp2: int
     n_reads_untagged: int
-    # Which HP values (1/2) actually produced a real per-haplotype call --
-    # only meaningful when routing == "phased"; always () otherwise.
+    # HP values (1/2) that produced a call; () unless routing == "phased".
     haplotypes_called: tuple[int, ...]
 
 
 def _round_cn_estimate(cn_estimate: float) -> int:
-    """Default `cn_round` (2026-08-23, user-requested) -- replaces plain
-    `round()`'s symmetric 0.5/1.5 thresholds with asymmetric ones (>0.25 ->
-    1, >1.25 -> 2) biased toward calling presence, per invariant 4 ("a CN=0
-    call is guilty until proven innocent"). Motivated by the real HG00097
-    benchmark's HLA-U (cn_estimate 0.41, present on ~86.5% of real hla_seq/
-    haplotypes per genes.yaml's own audit note) rounding to 0 and dropping
-    out of the output entirely under plain round()'s >=0.5 bar -- the same
-    failure shape invariant 4 already names for HLA-Y. Applies everywhere
-    `cn_round` is called (both the `diploid_typical` presence check and the
-    general CN-variable-gene sizing branch below); `low_cn_floor`'s own
-    dedicated gate (DRB3/4/5) runs first and is unaffected, since it never
-    reaches this function when it fires. Provisional (invariant 11) -- not
-    fitted or re-derived against real data, flagged here rather than
-    presented as principled, same as the `round()` default it replaces."""
+    """Default `cn_round`: >1.25 -> 2, >0.25 -> 1, else 0. Biased toward
+    presence (invariant 4); plain round() dropped HLA-U at 0.41.
+    Provisional."""
     if cn_estimate > 1.25:
         return 2
     if cn_estimate > 0.25:
@@ -400,40 +191,12 @@ def _round_cn_estimate(cn_estimate: float) -> int:
 def _raw_cn_int_for_gene(
     entry: GeneManifestEntry, cn_estimate: float, cn_round: Callable[[float], int], max_cn: int,
 ) -> int:
-    """The per-gene cn_int decision (low_cn_floor / diploid_typical / plain
-    round-and-clamp), factored out of the Stage 2-5 loop so the same logic
-    backs both the DRB3/4/5 mutual-exclusivity pre-pass below and the loop
-    itself. `cn_estimate` is the gene's own already-non-None GeneCN.cn_estimate
-    (a plain float parameter, not the GeneCN itself, so mypy can see it's
-    non-None at every call site without re-deriving that here)."""
+    """Per-gene cn_int: low_cn_floor gate, then round and clamp to max_cn."""
     if entry.low_cn_floor is not None and cn_estimate < entry.low_cn_floor:
-        # genes.yaml's low_cn_floor (DRB3/4/5) -- below this, a thin
-        # estimate is more plausibly cross-mapped read leakage from a
-        # well-covered segment neighbour than genuine partial presence;
-        # treat as absent rather than rounding normally to 1.
+        # Below low_cn_floor (DRB3/4/5): likely paralog leakage; absent.
         return 0
-    # `diploid_typical`'s own unconditional-max_cn forcing (present the
-    # 2026-07-30 revision built it on real, then-current data: a raw
-    # depth-ratio estimate landing at 1.4-1.6 and rounding down to 1 was
-    # Poisson counting noise on a thin read count, not a real single-copy
-    # deletion, because Stage 1's matrix-derived depth (assign.py's
-    # best_gene_per_read()) was too noisy to trust a CN=1 reading on its
-    # own) is removed as of 2026-08-31, user-directed: stages/cn.py's
-    # depth source changed the same session (see that module's own
-    # docstring) specifically because the old signal was shown, on real
-    # data, to systematically *undercount* HLA-H/K/T/U/W -- the new one
-    # does not carry that same undercounting bias for diploid_typical
-    # genes (real HG00097/HG00320 checks: every diploid_typical gene's
-    # raw estimate already lands close to 2 under the new signal without
-    # forcing), so trusting a genuine low estimate here is no longer the
-    # same gamble it was. `max_cn` stays a hard ceiling (invariant 11 --
-    # still an unfitted noise guard against a stray high estimate forcing
-    # a 3rd/4th-allele search), but there is deliberately no forced floor
-    # any more: a gene supported by real, low depth now reports CN=1 (or
-    # 0) honestly instead of always searching for 2, since invariant 4's
-    # "CN=0 is guilty until proven innocent" cuts the other way once the
-    # estimate itself is trustworthy -- a hidden real deletion is exactly
-    # the case forcing max_cn would silently mask.
+    # No forced floor for diploid_typical genes: the current depth signal is
+    # trustworthy enough that a low estimate may be a real deletion.
     return min(int(cn_round(cn_estimate)), max_cn)
 
 
@@ -445,21 +208,9 @@ _DRB_AMBIGUOUS_CN_HIGH = 2.0
 def _resolve_drb345_mutual_exclusivity(
     cn_int_by_gene: dict[str, int], gene_cn: dict[str, GeneCN],
 ) -> dict[str, int]:
-    """User-requested, 2026-08-26. DRB3/DRB4/DRB5 occupy the same DRB-frame
-    haplotype slot -- a real haplotype carries at most one of the three
-    (never two), so their `cn_int`s can sum to at most 2 across a diploid
-    sample, never 3. The per-gene rounding above (`_round_cn_estimate`,
-    `>1.25 -> 2`) has no visibility into the other two genes' own calls, so
-    a genuinely borderline gene (raw estimate just past that cutoff, e.g.
-    1.49) can independently round to 2 in the same run where a second gene
-    in the group independently rounds to a confident 1 -- summing to a
-    biologically impossible 3 (real HG00097 shape: DRB3 1.49 -> 2, DRB5
-    1.02 -> 1). Reads that specific pattern -- one gene still in the raw
-    (1.2, 2.0) ambiguous band that rounded up to 2, another already at a
-    confident 1 -- as heterozygous across the two genes (one haplotype
-    each) and pulls the ambiguous one down to 1 rather than 2. Does not
-    touch a gene that already rounds to 0, or fire when the group's sum is
-    already <= 2 (the ordinary, non-conflicting case)."""
+    """DRB3/4/5 share one haplotype slot, so their cn_ints sum to <= 2.
+    If one gene rounded up to 2 from the ambiguous (1.2, 2.0) band while
+    another sits at 1, pull the ambiguous one down to 1."""
     present = {g: cn_int_by_gene[g] for g in _DRB_MUTUALLY_EXCLUSIVE_GENES if g in cn_int_by_gene}
     if sum(present.values()) <= 2:
         return cn_int_by_gene
@@ -492,52 +243,14 @@ def rescue_stolen_reads(
     min_missing_reads: int = _MIN_MISSING_READS_TO_RESCUE,
     min_missing_fraction: float = _MIN_MISSING_FRACTION_TO_RESCUE,
 ) -> GeneAssignmentMatrix:
-    """**Not currently called from `_run_sample_core()` (reverted 2026-09-10,
-    see the development notes' HANDOFF for that session).** Confirmed on real H2009 data
-    to not fix the DQB1 case it was built for and to corrupt DRB4/MICB
-    (missing `max_read_mismatch_rate` gate on the rescued reads lets
-    cross-mapped noise into a thin matrix). Left defined, not deleted, for a
-    future session to either gate-and-revalidate or replace once DQB1's real
-    mechanism is understood -- do not re-wire this without addressing both.
+    """NOT CALLED: unwired after it failed to fix H2009 DQB1 and corrupted
+    DRB4/MICB (rescued reads lack a mismatch-rate gate). Do not re-wire
+    without addressing both.
 
-    Recovers a gene's own Stage-0-sieved reads that Stage 1's sparse
-    (`stage1_n_best=1`) matrix lost to a *different* gene, a real H2009
-    (CASTLE) HLA-DQB1 finding (development notes 2026-09-10 session): `n_best=1`
-    reports only each read's single globally-best hit across the *entire*
-    pool, not per-gene -- a read Stage 0 anchor-sieved to `gene` can still
-    lose that one slot to a different gene's allele if it happens to score
-    marginally higher in raw minimap2 match count, even when the read is
-    genuinely `gene`'s. Confirmed directly: DQB1 had 163 reads sieved to it
-    but only 50 rows in its own Stage 1 matrix -- 113 reads "stolen" by
-    other genes' alleles -- and the resulting matrix's own EM search over
-    just those 50 reads picked a spurious, 2-read-backed wrong second
-    allele instead of the true, well-supported one (confirmed present
-    among the 113 stolen reads via a dense, gene-restricted realignment).
-
-    This is the opposite failure shape from the one `n_best=1` was chosen
-    to fix (DRB1/HLA-A/MICA/MICB: one gene's matrix *flooded* with
-    cross-gene paralog noise at a high n_best) -- raising `n_best` back up
-    globally reopens that flooding (real HG00097/H2009 regressions
-    confirmed at n_best=512: HLA-DMB and HLA-N both lost a previously-exact
-    call). This function instead targets only the specific gene shown to
-    be losing reads, leaving `n_best=1`'s global behaviour for every other
-    gene untouched: if `gene`'s own Stage-0-sieved read count exceeds what
-    made it into `matrix` by at least `min_missing_reads` *and*
-    `min_missing_fraction` of the sieved total, the missing reads are
-    densely realigned against `gene`'s own full allele pool alone (cheap --
-    a handful to a few hundred reads against one gene's pool, not the
-    whole ~24,000-template pool `build_gene_matrices()` aligns against) and
-    merged back into `matrix`. Below either threshold, `matrix` is
-    returned unchanged -- most genes are not expected to need this, and
-    paying for a dense per-gene realignment on every gene regardless would
-    be real, mostly-wasted cost.
-
-    Both thresholds are provisional (invariant 11), chosen with headroom
-    over DQB1's own real gap (113 missing / 163 sieved = 69%) rather than
-    fitted -- not yet validated beyond the one real sample that motivated
-    this function; a full real-benchmark check (module docstring's own
-    "TAP1/TAP2 three-reverted-attempts" precedent for this class of fix)
-    is still needed before trusting this broadly."""
+    Recovers reads Stage 0 sieved to `gene` that Stage 1's n_best=1 matrix
+    assigned elsewhere: if at least `min_missing_reads` and
+    `min_missing_fraction` are missing, densely realign them against the
+    gene's pool and merge into `matrix`."""
     sieved_ids = {r.read_id for r in reads if gene in {h.gene for h in r.hits}}
     missing_ids = sieved_ids - set(matrix.read_ids)
     if not missing_ids or len(sieved_ids) == 0:
@@ -562,13 +275,7 @@ def rescue_stolen_reads(
 
 
 def _collapse_to_single_allele(call: TemplateCall) -> TemplateCall:
-    """Manufacture a single-allele TemplateCall from `call`'s own
-    single-allele baseline (already computed by Stage 2's search regardless
-    of which `cn` was searched) -- the orchestration-layer decision
-    stages/consensus.py's own docstring names but leaves unmade. `cn` stays
-    at the original estimated copy number; only the distinct-allele count
-    collapses, not the copy number itself. Shared by both collapse checks
-    in the per-gene loop below (module docstring)."""
+    """Single-allele TemplateCall from `call`'s baseline; `cn` is kept."""
     return TemplateCall(
         gene=call.gene, cn=call.cn, alleles=(call.single_allele,),
         weights=(1.0,), log_likelihood=call.single_allele_log_likelihood,
@@ -587,14 +294,7 @@ def _build_haplotype_call_result(
     typing_call: TypingCall,
     novelty_call: NoveltyCall,
 ) -> HaplotypeCallResult:
-    """Assembles the final per-haplotype output row from Stage 3's
-    consensus plus Stage 4/5's already-computed typing/novelty calls --
-    pure, no alignment work. Factored out of the old
-    `_type_and_classify_haplotype()` 2026-08-28 (lever 3, the development notes'
-    phased-pipeline performance investigation) so both the classical and
-    phased per-gene loops share it once Stage 4 typing runs batched
-    (`hla_typing.type_haplotypes_batch()`) rather than once inline per
-    haplotype."""
+    """Final per-haplotype row from Stage 3 consensus and Stage 4/5 calls."""
     mean_qv = (sum(hap.qv) / len(hap.qv)) if hap.qv else 0.0
     min_qv = min(hap.qv) if hap.qv else 0
     result = HaplotypeCallResult(
@@ -649,87 +349,23 @@ def _run_sample_core(
     samtools_bin: str = "samtools",
     progress: Callable[[str], None] | None = None,
 ) -> tuple[SampleResult, list[CandidateRead], dict[str, GeneAssignmentMatrix], dict[str, GeneAssignmentMatrix]]:
-    """`run_sample()`'s actual body, plus its own Stage 0 sieved reads and
-    Stage 1 (classical + C4) matrices exposed to the caller. Factored out
-    2026-08-28 (the development notes' phased-pipeline performance investigation,
-    lever 1) so `run_sample_phased()` can reuse this work directly instead
-    of re-sieving the FASTQ a second time (measured 89s on real HG00097
-    data) and reuse the per-gene matrices (lever 2, see
-    `assign.subset_matrix_by_read_ids()`) instead of rebuilding them per
-    haplotype. `run_sample()` itself is now a thin wrapper that discards
-    the two extra return values -- behaviour and public signature
-    unchanged for every existing caller.
+    """Body of `run_sample()`; also returns Stage 0 reads and Stage 1
+    matrices so `run_sample_phased()` can reuse them.
 
-    progress, if given, is called with one short label per stage
-    boundary -- interactive single-sample feedback (cli.py wires it to a
-    stderr line with elapsed time). No-op by default so a cohort-scale
-    caller running this per-sample across UKB doesn't get unwanted stdout
-    noise (DESIGN.md's population-scale framing).
+    progress: optional per-stage callback (cli.py prints elapsed time).
 
-    `stage1_n_best` (default 1, real HG00097 ONT benchmark finding)
-    overrides assign.build_gene_matrices()'s own `_BEST_N` (512) default
-    for this Stage 1/2 per-read matrix specifically -- see that function's
-    docstring for why 512 remains right for stages/hla_typing.py's
-    separate Stage 4 re-typing call (a single synthetic "read" needing
-    many reported candidates for ambiguity_set/field_gq) but wrong here: a
-    real per-read matrix at 512 let one read report a real alignment
-    against dozens to hundreds of alleles simultaneously, which is what
-    let both a redundant-name cluster (HLA-A) and diffuse paralog crowding
-    across a dense catalogue (HLA-DRB1) out-compete the true allele on
-    read depth. Restricting each read to its single best-scoring hit fixed
-    both, confirmed directly against real data, without requiring
-    genotype.py's narrow_candidates_by_mismatch_rate() to compensate after
-    the fact. Provisional (invariant 11) -- validated on one real sample.
+    stage1_n_best: hits reported per read in Stage 1 (default 1). Higher
+    values let redundant-name clusters (HLA-A) and paralogue crowding
+    (DRB1) outvote the true allele on depth. Provisional.
 
-    `control_depth`, if given, bypasses the real chr17-control alignment
-    pass below and is used directly. Two legitimate kinds of caller do
-    this: the test suite (dependency injection for tests that already know
-    the value they want CN normalised against and would otherwise need a
-    real, matching synthetic chr17 reference plus reads that hit it just to
-    exercise unrelated pipeline behaviour), and, 2026-09-01, `cli.py`'s own
-    `--bam` path, which can read this off the mini-BAM's own real alignment
-    via `chr17_control.compute_chr17_control_depth_from_bam()` instead of
-    paying for a second, redundant whole-FASTQ realignment -- a real,
-    computed value, not a synthetic one, so this is a genuine production
-    use of the override, not just a test seam. `control_n_reads` is the
-    matching read-count companion value (reporting only, module docstring
-    of `chr17_control.py`); it is ignored unless `control_depth` is also
-    given. `None` (the default) means "compute it for real" via the
-    whole-FASTQ pass -- callers with no cheaper real alignment to read it
-    from must not fake one.
+    control_depth / control_n_reads: precomputed chr17 control depth (tests;
+    cli.py's --bam path reads it off the mini-BAM). None = compute it by
+    aligning the whole FASTQ.
 
-    `pre_search_min_reads_per_haplotype`/`pre_search_min_haplotype_read_ratio`
-    (added 2026-09-10, real H2009 CASTLE HLA-DQB1 finding -- genotype.py's
-    module docstring on `_ONT_MIN_READS_PER_HAPLOTYPE`): forwarded to
-    `select_template_set_ont_r10()` to disqualify a candidate combo from
-    ever winning Stage 2's argmax search if its own EM-implied hard read
-    split fails either floor. Deliberately a *separate* parameter pair from
-    `min_reads_per_haplotype`/`min_haplotype_read_ratio` just below -- that
-    pair gates a different, pre-existing (2026-07-30) mechanism, the *post*-
-    consensus collapse-to-homozygous check a few hundred lines down, which a
-    real MICA case specifically motivated raising its own floor to 3 for.
-    Reusing one parameter for both would silently disable that unrelated,
-    already-validated check whenever a caller wants to ablate just this
-    newer pre-search one (confirmed needed: an early real 6-sample
-    regression check for this fix did exactly that by accident and produced
-    a confounded result -- MICA looked "fixed" only because its own,
-    unrelated floor was off too, not because of anything this new
-    mechanism did).
-
-    `pre_search_min_haplotype_read_ratio` default revised 0.1 -> 0.2 -> 0.0
-    (retired) across the 2026-09-10/11 sessions -- genotype.py's own module
-    docstring on `_ONT_MIN_HAPLOTYPE_READ_RATIO` has the full real-data
-    story: 0.2 fixed three real spurious picks 0.1 let through but broke
-    three different real genuine picks in the same benchmark, because the
-    pre-search floor's read split is an EM-implied *proxy*, not the real
-    post-alignment count, and that proxy under-estimates how skewed a
-    real correct pair's split actually turns out to be. The ratio question
-    now lives entirely in `min_haplotype_read_ratio` below (the pre-existing
-    *post*-consensus check, still 0.1, which acts on the real count) --
-    `pre_search_min_haplotype_read_ratio` stays as a parameter (still
-    forwarded to the pre-search floor) purely so a caller can restore a
-    nonzero value if a future case needs it, but 0.0 is a no-op by
-    construction (`_passes_read_count_floor`'s own module docstring).
+    pre_search_min_reads_per_haplotype / _ratio: Stage 2's pre-search combo
+    floor (genotype.py). Separate from min_reads_per_haplotype /
+    min_haplotype_read_ratio, the post-consensus collapse check, so each can
+    be ablated alone. The pre-search ratio defaults to 0.0 (off).
     """
     if ont_config is None:
         ont_config = load_ont_r10_config()
@@ -755,12 +391,8 @@ def _run_sample_core(
     )
     if progress:
         progress("Stage 1: measuring chr17 control depth")
-    # Real base-level coverage against the shipped chr17 control region
-    # (stages/chr17_control.py) -- one whole-`fastq_path` minimap2 pass,
-    # independent of Stage 0's sieve (a read supporting the control has
-    # nothing to do with any HLA anchor and would never pass it). Not
-    # `reads` (Stage 0's own sieved output) -- same reasoning c4_chr17_cn.py
-    # already established for C4's own control-depth measurement.
+    # chr17 control depth from the whole FASTQ: control reads never pass
+    # the HLA anchor sieve.
     if control_depth is None:
         control_depth, control_n_reads = compute_chr17_control_depth(
             fastq_path, chr17_control_fasta=chr17_control_fasta,
@@ -768,24 +400,13 @@ def _run_sample_core(
         )
     if progress:
         progress("Stage 1: estimating copy number")
-    # reads (Stage 0's sieved output), not matrices -- stages/cn.py's own
-    # 2026-09-01 depth-source revision (see that module's docstring: real
-    # samtools-depth over each gene's own anchors, normalised against
-    # control_depth -- real chr17-control samtools depth -- rather than
-    # the old per-class calibrator-panel median).
     gene_cn = estimate_cn(reads, control_depth, genes_yaml=genes_yaml, anchors_meta_path=anchors_meta_path)
     manifest = load_gene_manifest(genes_yaml)
 
     if progress:
         progress("Stage 1 (C4): assigning reads to C4A/C4B templates")
-    # DESIGN.md S2f: C4A/C4B have no star-allele pool, so this is a
-    # completely separate build_gene_matrices() call against
-    # resources/templates/assembly_bundle/c4.fa.gz (stages/c4_cn.py's own
-    # docstring) -- same Stage 0-sieved `reads`, different reference set.
-    # Reported as one combined "C4" entry in gene_cn (never routed through
-    # `manifest`, which stages/cn.py's load_gene_manifest() already excludes
-    # structural genes from -- so the Stage 2-5 typing loop below is
-    # unaffected and never attempts to type it).
+    # C4A/C4B: separate alignment of the same reads against the C4 bundle;
+    # reported as "C4" in gene_cn, never typed by Stages 2-5.
     c4_matrices = build_gene_matrices(
         reads, pool_fasta=c4_pool_fasta, pool_meta=c4_pool_meta,
         n_threads=n_threads, minimap2_bin=minimap2_bin,
@@ -800,38 +421,18 @@ def _run_sample_core(
 
     if progress:
         progress("Stage 1 (C4): A-vs-B / long-vs-short form (Phase 2)")
-    # DESIGN.md S2f Phase 2 (stages/c4_form.py) -- reuses c4_matrices
-    # unchanged, no new alignment work. Never gates the Phase 1 total-CN
-    # readout above or the Stage 2-5 typing loop below.
+    # C4 Phase 2 (A/B, long/short) from c4_matrices; no new alignment.
     c4_ab_call, c4_form_call = estimate_c4_form(
         c4_matrices, reads_by_id,
         meta_path=c4_pool_meta, pool_fasta=c4_pool_fasta,
     )
-    # User-requested, 2026-08-27: CN_A/CN_B, a proportional split of the
-    # Phase 1 total by the Phase 2 vote ratio -- see
-    # estimate_c4_per_gene_cn()'s own docstring for why this isn't an
-    # independent per-gene depth-ratio estimate.
     c4_per_gene_cn = estimate_c4_per_gene_cn(gene_cn[C4_REPORTED_GENE], c4_ab_call)
 
     if progress:
         progress("Stage 1 (C4): chr17-control per-form CN")
-    # 2026-09-01, user-directed: the chr17-control mechanism
-    # (stages/c4_chr17_cn.py), validated in last session's real HG00253
-    # investigation as measurably closer to truth than the calibrator-
-    # panel total above, is now production for C4 -- see write_calls_tsv's
-    # own docstring for how its total supersedes gene_cn["C4"] in
-    # calls.tsv while the older mechanism stays computed (still visible in
-    # qc.json's own "gene_cn" block) as a live cross-check, not silently
-    # dropped. Reuses this call's own control_depth/control_n_reads
-    # (already computed above for the classical-gene normaliser) rather
-    # than repeating a second, redundant whole-FASTQ chr17 alignment pass.
-    # `compute_c4_chr17_control=False` (default True) skips this real
-    # alignment pass entirely -- dependency injection for the test suite,
-    # same reasoning as `control_depth`'s own override (docstring above):
-    # most callers of this function are testing unrelated pipeline
-    # behaviour and would otherwise pay for, and need a synthetic fixture
-    # for, an alignment pass against the real production
-    # c4_flanked_fasta/chr17_control_fasta resources.
+    # chr17-control per-form C4 CN (production C4 total in calls.tsv; the
+    # calibrator-panel total above stays in qc.json as a cross-check).
+    # compute_c4_chr17_control=False skips it for tests.
     c4_chr17_control = estimate_c4_cn_via_chr17_control(
         fastq_path, chr17_control_fasta=chr17_control_fasta, c4_flanked_fasta=c4_flanked_fasta,
         control_depth=control_depth, control_n_reads=control_n_reads,
@@ -850,16 +451,11 @@ def _run_sample_core(
     consensus_records: list[HaplotypeConsensus] = []
     novelty_by_key: dict[tuple[str, int], NoveltyCall] = {}
     failures: list[GeneFailure] = []
-    # Stage 2-3 results collected across every gene, Stage 4-5 typing run
-    # once in a single batched call afterward (module docstring, lever 3).
+    # Stage 2-3 per gene; Stage 4-5 typing runs batched afterward.
     pending_haplotypes: list[tuple[str, int, int, HaplotypeConsensus, tuple[str, ...]]] = []
 
     manifest_genes = sorted(manifest)
-    # First pass: every gene's cn_int under the ordinary per-gene rules
-    # (low_cn_floor / diploid_typical / plain round-and-clamp), with no
-    # cross-gene knowledge yet -- genes with no usable CN estimate are left
-    # out here and handled as failures in the second pass below, same as
-    # before this pre-pass was introduced.
+    # Per-gene cn_int; genes without a CN estimate fail in the loop below.
     raw_cn_int: dict[str, int] = {}
     for gene in manifest_genes:
         entry = manifest[gene]
@@ -867,11 +463,7 @@ def _run_sample_core(
         if this_gene_cn is None or this_gene_cn.cn_estimate is None:
             continue
         raw_cn_int[gene] = _raw_cn_int_for_gene(entry, this_gene_cn.cn_estimate, cn_round, max_cn)
-    # DRB3/DRB4/DRB5 mutual exclusivity (module docstring on
-    # _resolve_drb345_mutual_exclusivity) needs to see all three genes'
-    # raw cn_int together before any of them commits to a Stage 2 search
-    # size, which is why this can't be folded into the per-gene branch
-    # above.
+    # DRB3/4/5 exclusivity needs all three raw cn_ints at once.
     cn_int_by_gene = _resolve_drb345_mutual_exclusivity(raw_cn_int, gene_cn)
 
     for gene in manifest_genes:
@@ -913,10 +505,7 @@ def _run_sample_core(
                 min_haplotype_read_ratio=pre_search_min_haplotype_read_ratio,
             )
             if call.cn > 1 and call.lrt_statistic < min_heterozygous_lrt:
-                # Weak evidence for `cn` genuinely distinct alleles -- collapse
-                # to the single best-supported one (module docstring; the
-                # orchestration-layer decision stages/consensus.py's own
-                # docstring names but leaves unmade).
+                # Weak LRT: collapse to the single best allele.
                 call = _collapse_to_single_allele(call)
             haps = build_gene_consensus(
                 matrix, reads, call, pool_fasta=pool_fasta, config=ont_config,
@@ -928,12 +517,8 @@ def _run_sample_core(
                     min(counts) < min_reads_per_haplotype
                     or min(counts) / max(counts) < min_haplotype_read_ratio
                 ):
-                    # The LRT check above didn't catch it, but the real hard
-                    # read partition shows a "distinct" allele with
-                    # essentially no reads behind it (absolute floor, real
-                    # HLA-B finding) or a small fraction of the major
-                    # haplotype's depth (ratio floor, module docstring) --
-                    # collapse to the dominant, single-best-supported allele.
+                    # Too few reads (absolute or ratio) on a haplotype:
+                    # collapse to the dominant allele.
                     call = _collapse_to_single_allele(call)
                     haps = build_gene_consensus(
                         matrix, reads, call, pool_fasta=pool_fasta, config=ont_config,
@@ -944,34 +529,16 @@ def _run_sample_core(
             continue
 
         if len(haps) == 1 and call.cn > 1:
-            # Collapsed to one distinct allele (above) but still `cn`
-            # real copies -- report one row per real copy, not one row
-            # that reads identically to a genuine cn=1 call and can be
-            # misread as a deletion (HLA-B/HLA-DMA/HLA-S/MICA, real
-            # HG00097 finding, all confirmed genuinely homozygous against
-            # truth 2026-08-07). `hap` is the same object each time, not
-            # re-derived -- deterministic by construction (invariant 9).
+            # Collapsed but still `cn` copies: one row per copy, so a
+            # homozygote isn't misread as a deletion.
             haps = haps * call.cn
 
         for h_idx, hap in enumerate(haps):
             pending_haplotypes.append((gene, h_idx, cn_int, hap, call.candidates))
 
-    # 2026-08-28 performance fix (lever 3, development notes session log): Stage 4-5
-    # typing used to run inline, once per haplotype, inside the loop above
-    # (up to 68 individually-full-pool-reloaded minimap2 calls on a real
-    # sample) -- now a single hla_typing.type_haplotypes_batch() call scores
-    # every gene's every haplotype at once. classify() (Stage 5) never
-    # shells out to minimap2 at all (reuses type_haplotype's own captured
-    # span), so it stays a per-haplotype Python call here, unaffected.
-    #
-    # `extra_candidates_by_key` (2026-09-02, real HG00097 TAP2 finding):
-    # Stage 2's own narrowed candidate set for this gene (call.candidates)
-    # is passed through so Stage 4 can fall back to a dense realignment
-    # against it when a fresh whole-pool alignment of the consensus itself
-    # silently drops a genuinely shorter-but-correct candidate (see
-    # hla_typing.py's own docstring on this). Cheap in the common case --
-    # only triggers the extra realignment when something is actually
-    # missing from the naive search.
+    # Batched Stage 4 typing for every haplotype. call.candidates is passed
+    # so Stage 4 can densely realign when the whole-pool search drops a
+    # shorter-but-correct candidate (TAP2).
     if progress:
         progress(f"Stage 4-5: typing {len(pending_haplotypes)} haplotype call(s)")
     typing_calls, typing_failures = type_haplotypes_batch(
@@ -1057,10 +624,7 @@ def run_sample(
     samtools_bin: str = "samtools",
     progress: Callable[[str], None] | None = None,
 ) -> SampleResult:
-    """Thin wrapper over `_run_sample_core()` (see that function's own
-    docstring for the full behaviour) -- discards the sieved-reads/matrices
-    it exposes for `run_sample_phased()`'s benefit. Signature and behaviour
-    unchanged from before the 2026-08-28 refactor."""
+    """`_run_sample_core()` without the extra return values."""
     result, _reads, _matrices, _c4_matrices = _run_sample_core(
         sample_id, fastq_path,
         pool_fasta=pool_fasta, pool_meta=pool_meta, models_path=models_path,
@@ -1090,16 +654,9 @@ def _decide_phase_routing(
     *,
     no_reads_reason: str = "no reads recruited to this gene",
 ) -> GenePhaseRouting:
-    """DESIGN.md S10.3: the phased-routing decision (single PS phase block,
-    HP-tagged reads present, tagged fraction clears
-    `min_phased_tagged_fraction`) factored out so it is made identically --
-    and is unit-testable on its own -- for both the per-manifest-gene loop
-    and the C4A/C4B pseudo-gene check in `run_sample_phased()`, which need
-    the same rule applied to two different read pools. `haplotypes_called`
-    is always returned `()`: it is only known once Stage 2-5 (or, for C4,
-    the form classifiers) actually run, filled in by the caller afterward
-    via `dataclasses.replace()`.
-    """
+    """Phased-routing decision (DESIGN.md S10.3): reads present, HP-tagged
+    reads in a single PS block, tagged fraction >= the floor. Shared by the
+    gene loop and the C4 check. `haplotypes_called` is filled in later."""
     if not gene_reads:
         return GenePhaseRouting(
             gene=gene, routing="unphased_fallback", reason=no_reads_reason,
@@ -1167,19 +724,10 @@ def _c4_calibrator_reads_for_haplotype(
     reads_by_gene: dict[str, list[CandidateRead]],
     phase_of: Callable[[CandidateRead], ReadPhase],
 ) -> list[CandidateRead]:
-    """DESIGN.md S10.5/S10.6: which calibrator genes' HP-split reads are
-    safe to use for *this* haplotype's per-haplotype C4 CN panel. S10.3's
-    stitching warning is the reason this isn't a trivial lookup: `HP=1` for
-    one gene is only guaranteed to mean the same physical chromosome as
-    `HP=1` for another gene if both sit in the same `PS` phase block. A
-    calibrator gene only contributes here if it independently routed
-    "phased" (its own single-PS-block/tagged-fraction check already
-    passed) *and* its own singleton `ps_values_seen` is identical to C4's
-    own -- real, checked evidence, not an assumption. `c4_ps_values` of
-    length != 1 (no real PS block, or C4's own reads span none) means
-    nothing can ever match, by construction -- the caller gets an empty
-    list for every haplotype, which is the honest answer, not a special
-    case handled here."""
+    """Calibrator reads usable for one haplotype's C4 CN panel. HP=1 only
+    means the same chromosome across loci within one PS block, so a
+    calibrator gene contributes only if it routed "phased" with the same
+    single PS value as C4."""
     if len(c4_ps_values) != 1:
         return []
     reads: list[CandidateRead] = []
@@ -1234,141 +782,34 @@ def run_sample_phased(
     samtools_bin: str = "samtools",
     progress: Callable[[str], None] | None = None,
 ) -> SampleResult:
-    """DESIGN.md S10: phased-input mode. Stage 0 (extraction -> mini-BAM ->
-    FASTQ) is unchanged and already ran by the time this is called --
-    cli.py passes both the FASTQ and the mini-BAM it was converted from
-    (the mini-BAM still carries the real `HP`/`PS` tags `mini_bam_to_fastq`
-    drops); this function does not extract anything itself.
+    """Phased-input mode (DESIGN.md S10). Takes the FASTQ and the mini-BAM
+    (which keeps HP/PS tags).
 
-    **Reuses `run_sample()`'s full per-gene CN/collapse logic (via
-    `_run_sample_core()`, its shared body), rather than reimplementing it.**
-    That logic (LRT collapse, min_reads_per_haplotype,
-    min_haplotype_read_ratio, cn_model-aware search sizing, DRB3/4/5 mutual
-    exclusivity -- all tuned against real HG00097 data, see this module's
-    own docstring) is exactly what a gene on the *unphased fallback* path
-    (S10.3: no HP-tagged reads recruited to it, or its reads span more than
-    one PS phase block) still needs. Rebuilding it a second time here would
-    either duplicate it (drift risk) or subtly diverge from the validated
-    version -- so every gene starts from that run's own output, and only
-    genes that clear the S10.3 bar have their calls *replaced* with a fresh
-    per-haplotype result. **2026-08-28 performance fix:** this used to call
-    `run_sample()` itself and then separately re-sieve the FASTQ (measured
-    89s of pure waste) to recover the read list `run_sample()` doesn't
-    expose; it now calls `_run_sample_core()` directly, which returns the
-    unphased `SampleResult` *and* the sieved reads and Stage 1 matrices in
-    one pass -- see that function's own docstring.
+    Runs the unphased pipeline first (`_run_sample_core()`), then for each
+    gene that routes "phased" (`_decide_phase_routing`) replaces its calls
+    with per-HP results: Stage 1 matrix subset by HP, Stage 2 with cn=1,
+    Stage 3, Stage 4-5; `haplotype_index` is the HP value. Other genes keep
+    the unphased calls. Every manifest gene gets a `GenePhaseRouting`.
 
-    **Per-haplotype replacement (S10.4).** For a gene whose own recruited
-    reads split cleanly by `HP` under a single shared `PS` value, each
-    haplotype's read subset is run through Stage 1 (assign) -> Stage 2
-    (genotype, `cn` forced to 1 -- a single-template search, not a
-    combination search, since the pool has already been split by real
-    phase) -> Stage 3 (consensus) -> Stage 4-5 (typing/novelty)
-    independently, with `haplotype_index` set to the real `HP` value (1/2)
-    instead of Stage 2's arbitrary search-order label. A haplotype with no
-    reads at all for that gene (real hemizygosity, or a deletion on that
-    specific chromosome) simply contributes no row -- recorded via
-    `GenePhaseRouting.haplotypes_called`, not silently absent (S10.3/qc.json).
+    A gene routes "phased" only if >= `min_phased_tagged_fraction` (0.5) of
+    its reads are HP-tagged (HLA-C had 11/72 tagged and mistyped). A
+    haplotype with < `min_reads_per_haplotype` reads is a failure, not a
+    call.
 
-    **Every manifest gene gets a `GenePhaseRouting` entry, user-requested,**
-    so which genes went through which pipeline is an explicit, inspectable
-    QC field (stages/output.py's write_qc_json) rather than something only
-    re-derivable from re-reading the code.
+    C4 (S10.6): the same routing runs on the C4A/C4B read pool; per phased
+    haplotype, form classifiers and total CN rerun on that haplotype's reads.
+    The CN calibrator panel uses only genes phased in C4's PS block
+    (`_c4_calibrator_reads_for_haplotype`); none -> cn_estimate None. A
+    haplotype carrying an RCCX duplication can still show both A and B.
 
-    **C4A/C4B phasing (S10.6), user-requested, added 2026-08-27 -- Phase 2
-    only.** C4A/C4B have no per-haplotype template call to speak of (S2f:
-    no star-allele nomenclature), so there is nothing analogous to S10.4's
-    single-template replacement to do for them. What *is* built: the same
-    routing decision (single PS block, HP-tagged reads present, tagged
-    fraction >= `min_phased_tagged_fraction`) runs a second time for the
-    combined C4A/C4B read pool (keyed `C4_REPORTED_GENE` in `routing`,
-    right alongside the manifest genes), and for each haplotype that
-    clears it, `stages/c4_form.py`'s existing `classify_a_vs_b`/
-    `classify_long_vs_short` (via `estimate_c4_form`) run again on just
-    that haplotype's own C4-informative reads -- unchanged classifier
-    logic, a smaller/real-phase-restricted read pool, exactly DESIGN.md
-    S10.6's own description. Results land in `c4_phased_ab_calls`/
-    `c4_phased_form_calls` (keyed by real HP value), surfaced in
-    `qc.json`'s `c4_form.per_haplotype` and as extra per-haplotype
-    `C4A`/`C4B` rows in `calls.tsv` (`stages/output.py`) when present.
-    **Phase 1 (total CN), added 2026-08-28.** Splitting `gene_cn["C4"]`'s
-    depth-ratio formula per haplotype needs a per-haplotype calibrator
-    panel -- the real blocker DESIGN.md S10.5/S10.6 both flag: a class I
-    calibrator gene's own `HP=1` is not guaranteed to be the same physical
-    chromosome as C4's own `HP=1` unless the two share a `PS` phase block
-    (S10.3's own stitching warning). `_c4_calibrator_matrices_for_haplotype()`
-    resolves this directly rather than assuming it: a calibrator gene
-    (`c4_cn.calibrator_genes_for_c4()`, the identical class I panel
-    `estimate_c4_cn()` already uses sample-wide) only contributes its
-    HP-split reads to a given haplotype's panel if that gene *independently*
-    routed "phased" (its own single-PS-block/tagged-fraction check already
-    passed) **and** its own `ps_values_seen` is identical to C4's own --
-    i.e. real, checked evidence the two loci are phased on the same
-    chromosome-scale block, not an assumption. A calibrator gene that
-    doesn't share C4's PS block is simply excluded from that sample's
-    per-haplotype panel (graceful degradation, the same "opportunistic when
-    real data supports it" contract `stages/c4_cn.py`'s own length-inflation
-    correction already uses) -- `estimate_c4_cn()` itself is unchanged,
-    called a second time per haplotype on these PS-matched, HP-restricted
-    matrices; `estimate_c4_per_gene_cn()` (also unchanged) then splits that
-    haplotype's own total by its own `C4AbCall` vote ratio for `cn_a`/
-    `cn_b`. Results land in `c4_phased_cn`/`c4_phased_per_gene_cn` (keyed by
-    real HP value), surfaced in `qc.json`'s `c4_form.per_haplotype` and as
-    extra per-haplotype `"C4"` rows (and populated `cn` on the existing
-    per-haplotype `"C4A"`/`"C4B"` rows) in `calls.tsv`. When no calibrator
-    gene shares C4's PS block for a sample (small-n, or genuinely
-    non-chromosome-scale phasing), `GeneCN.cn_estimate` comes back `None`
-    for that haplotype -- present in the output, honestly uncertain, never
-    a guess and never silently omitted (invariant 4's "loud, not silent"
-    convention). `gene_cn["C4"]` remains the separate sample-wide aggregate
-    regardless. **Documented limit, unchanged from DESIGN.md S10.6:** a
-    haplotype's own per-haplotype tally
-    can still show both A and B (or both long and short) votes if that
-    haplotype itself carries an internal RCCX duplication -- HP phasing
-    resolves which chromosome a read came from, not which of several
-    tandem repeats on that chromosome.
-
-    **Still not yet done, flagged not hidden:** `gene_cn` (Stage 1's
-    depth-ratio estimate) is left exactly as `run_sample()` computed it for
-    every gene, informational only for a "phased"-routed gene -- the real
-    per-haplotype presence/absence is `haplotype_calls`/
-    `GenePhaseRouting.haplotypes_called`, not a re-derived CN number.
-
-    **`min_phased_tagged_fraction` (default 0.5), added 2026-08-27 after
-    real HG00097 validation surfaced a real gap.** The routing check
-    (S10.3) originally only asked *whether* HP-tagged reads existed and
-    agreed on one PS value -- not whether *enough* of a gene's reads were
-    tagged at all. Real data broke this: HLA-C had only 11 of 72 recruited
-    reads carrying an HP tag (61 untagged), giving a 3-read/8-read
-    haplotype split that mistyped one haplotype as novel where the
-    unphased path (using all 72 reads) called it correctly. A gene now
-    also needs `(n_hp1 + n_hp2) / len(gene_reads) >=
-    min_phased_tagged_fraction` to route "phased" -- otherwise it falls
-    back with a `reason` naming the shortfall, same as a PS conflict.
-    Provisional (invariant 11): chosen as a reasonable majority-coverage
-    bar, not fitted -- HLA-C's real 0.153 sits nowhere near a defensible
-    threshold either way, so 0.5 was not chosen to thread a narrow needle.
-    **Separately, a per-haplotype floor:** even within a gene that clears
-    the fraction bar, a haplotype with a nonzero but very small tagged-read
-    count (below `min_reads_per_haplotype`, reusing the same threshold the
-    unphased path already applies post-hoc) does not get a Stage 2-5
-    attempt at all -- recorded as a failure, not a low-confidence call built
-    from too little evidence to mean anything.
+    `gene_cn` stays the unphased sample-wide estimate.
     """
     if ont_config is None:
         ont_config = load_ont_r10_config()
     if typing_params is None:
         typing_params = TypingParams.load()
 
-    # 2026-08-28 performance fix (levers 1-2, development notes session log): calls
-    # _run_sample_core() once instead of run_sample() + a second, separate
-    # sieve_fastq() pass -- measured 89s of pure waste on real HG00097 data
-    # (the sieve is deterministic, invariant 9, so the second pass always
-    # produced an identical `reads` list to the one run_sample() itself
-    # already computed and discarded). `matrices`/`c4_matrices` (Stage 1's
-    # own per-gene assignment matrices) are reused below via
-    # `assign.subset_matrix_by_read_ids()`/`classical_matrices_for_reads()`
-    # (lever 2) instead of re-running minimap2 per haplotype.
+    # Reuse the unphased run's sieved reads and Stage 1 matrices.
     unphased, reads, matrices, c4_matrices = _run_sample_core(
         sample_id, fastq_path,
         pool_fasta=pool_fasta, pool_meta=pool_meta, models_path=models_path,
@@ -1419,12 +860,8 @@ def run_sample_phased(
     phased_consensus_records: list[HaplotypeConsensus] = []
     phased_novelty_by_key: dict[tuple[str, int], NoveltyCall] = {}
     phased_failures: list[GeneFailure] = []
-    # Stage 2-3 results collected across every phased gene, Stage 4-5
-    # typing run once in a single batched call afterward (2026-08-28
-    # performance fix, lever 3 -- same pattern as _run_sample_core()'s own
-    # per-gene loop above). `routing[gene].haplotypes_called` is only
-    # finalised after that batch, since consensus succeeding here does not
-    # yet mean a real, fully-typed call exists.
+    # Stage 2-3 per phased gene; Stage 4-5 batched afterward, then routing
+    # is finalised.
     pending_phased_haplotypes: list[tuple[str, int, HaplotypeConsensus]] = []
 
     for gene in sorted(phased_genes):
@@ -1446,11 +883,7 @@ def run_sample_phased(
                     f"little evidence for a reliable per-haplotype call",
                 ))
                 continue
-            # lever 2 (2026-08-28): row-subset Stage 1's own already-computed
-            # matrix for this gene instead of calling build_gene_matrices()
-            # again -- see assign.subset_matrix_by_read_ids()'s own
-            # docstring for why this is exactly equivalent, not an
-            # approximation.
+            # Row-subset Stage 1's matrix (equivalent to rebuilding it).
             full_matrix = matrices.get(gene)
             matrix = (
                 subset_matrix_by_read_ids(full_matrix, {r.read_id for r in hp_reads})
@@ -1488,12 +921,8 @@ def run_sample_phased(
 
         try:
             if len(hp_calls) == 2:
-                # lever 4 (2026-08-28): one combined realign+consensus call
-                # covering both haplotypes' own winning alleles, instead of
-                # two separate build_gene_consensus() calls -- see
-                # build_phased_pair_consensus()'s own docstring for why this
-                # preserves the real, known HP partition rather than
-                # re-deriving it via EM responsibility.
+                # One realign+consensus for both haplotypes, keeping the
+                # real HP partition.
                 haps_by_hp = build_phased_pair_consensus(
                     gene, hp_reads_by_val, hp_matrix_by_val,
                     {hp: call.alleles[0] for hp, call in hp_calls.items()},
@@ -1518,10 +947,7 @@ def run_sample_phased(
         for hp_val, hap in haps_by_hp.items():
             pending_phased_haplotypes.append((gene, hp_val, hap))
 
-    # 2026-08-28 performance fix (lever 3): batched Stage 4-5 typing across
-    # every phased haplotype call collected above, mirroring
-    # _run_sample_core()'s own per-gene loop -- see that call site's own
-    # comment and hla_typing.type_haplotypes_batch()'s docstring.
+    # Batched Stage 4-5 typing for phased haplotypes.
     if progress:
         progress(f"Phased Stage 4-5: typing {len(pending_phased_haplotypes)} haplotype call(s)")
     phased_typing_calls, phased_typing_failures = type_haplotypes_batch(
@@ -1553,12 +979,7 @@ def run_sample_phased(
         phased_novelty_by_key[(gene, hp_val)] = novelty_call
         haplotypes_called_by_gene.setdefault(gene, []).append(hp_val)
 
-    # Finalise routing for every gene that reached the typing attempt above
-    # (genes that failed earlier already set their own routing/failure
-    # directly, inside the loop) -- a gene with zero successfully-typed
-    # haplotypes here still routed "phased" through Stage 2-3 but produced
-    # no real call, the same "neither haplotype produced a real call"
-    # outcome the pre-batching code detected inline per gene.
+    # Finalise routing for genes that reached typing.
     for gene in sorted({g for g, _hp, _hap in pending_phased_haplotypes}):
         called = tuple(sorted(haplotypes_called_by_gene.get(gene, [])))
         routing[gene] = replace(routing[gene], haplotypes_called=called)
@@ -1569,13 +990,7 @@ def run_sample_phased(
                 "a real call (see per-haplotype failures above)",
             ))
 
-    # DESIGN.md S10.6: per-haplotype C4A/C4B form discrimination (Phase 2
-    # only). C4A/C4B are not in `manifest` (load_gene_manifest() excludes
-    # structural genes), so this runs as one extra pseudo-gene routing
-    # decision alongside the per-manifest-gene loop above, keyed
-    # C4_REPORTED_GENE ("C4") -- same routing rules (single PS block,
-    # tagged-fraction floor, per-haplotype read-count floor), reusing the
-    # same `reads_by_gene`/`_phase_of` machinery.
+    # C4 (not in manifest) as an extra routed pseudo-gene, same rules.
     c4_reads_by_id_map: dict[str, CandidateRead] = {}
     for c4_gene in C4_GENES:
         for r in reads_by_gene.get(c4_gene, []):
@@ -1608,12 +1023,7 @@ def run_sample_phased(
                     f"{min_reads_per_haplotype})",
                 ))
                 continue
-            # 2026-08-28 performance fix (lever 2, extended to the C4 phased
-            # block): reuse _run_sample_core()'s own sample-wide c4_matrices
-            # (built once already) instead of a fresh build_gene_matrices()
-            # call -- same equivalence argument as the manifest-gene loop
-            # above, just via the multi-gene helper since C4_GENES has two
-            # members.
+            # Reuse sample-wide c4_matrices.
             hp_c4_matrices = classical_matrices_for_reads(c4_matrices, hp_c4_reads, C4_GENES)
             hp_c4_reads_by_id = {r.read_id: r.sequence for r in hp_c4_reads}
             ab_call, form_call = estimate_c4_form(
@@ -1623,18 +1033,12 @@ def run_sample_phased(
             c4_phased_ab_calls[hp_val] = ab_call
             c4_phased_form_calls[hp_val] = form_call
 
-            # DESIGN.md S10.5/S10.6, added 2026-08-28: per-haplotype total
-            # C4 CN (Phase 1) -- PS-matched calibrator panel, see
-            # _c4_calibrator_reads_for_haplotype()'s own docstring.
+            # Per-haplotype C4 CN with a PS-matched calibrator panel.
             hp_calibrator_reads = _c4_calibrator_reads_for_haplotype(
                 hp_val, c4_routing.ps_values_seen, c4_calibrator_genes,
                 routing, reads_by_gene, _phase_of,
             )
-            # Same reuse (lever 2): calibrator genes are always a subset of
-            # `manifest`, so Stage 1's own `matrices` already has each one
-            # fully aligned -- classical_matrices_for_reads() reconstructs
-            # the per-gene subset build_gene_matrices() would have, without
-            # a second minimap2 call.
+            # Calibrator genes are already in Stage 1's matrices.
             hp_classical_matrices = (
                 classical_matrices_for_reads(matrices, hp_calibrator_reads, c4_calibrator_genes)
                 if hp_calibrator_reads else {}

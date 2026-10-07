@@ -1,48 +1,18 @@
-"""C4A/C4B form discrimination (DESIGN.md S2f, Phase 2) -- A-vs-B by exon 26
-key peptide positions, long-vs-short by intron 9 span length, both observed
-directly from real reads. User-scoped follow-up to stages/c4_cn.py's Phase 1
-(total CN via depth ratio, unchanged and untouched by this module).
+"""C4A/C4B form discrimination from reads (DESIGN.md S2f, Phase 2).
 
-**Why this is a separate, honest readout from Phase 1's total depth, not a
-replacement for it.** stages/c4_cn.py's own docstring already flags that
-which of the two build_gene_matrices() matrices (C4A vs C4B) a read's *best
-overall alignment* lands in is not a validated A-vs-B call -- C4A/C4B are
-near-identical outside exon 26, so a read's coarse best-gene bucket over the
-whole ~20kb template is dominated by noise elsewhere in the sequence, not by
-the handful of real isotype-determining bases. This module never uses that
-bucket assignment as the A/B signal. Instead, for every C4 read it finds
-its single best-matching *allele* across the combined C4A+C4B candidate
-pool (`_best_allele_cell_per_read`, one shared reduction feeding both
-classifiers below) purely to get accurate alignment coordinates/CIGAR, then:
+The C4A-vs-C4B matrix a read lands in is noise-dominated (the genes differ
+almost only in exon 26), so it is never used as the A/B signal. Each read's
+best allele across both pools (`_best_allele_cell_per_read`) only provides
+alignment coordinates; then:
 
-- **A vs B**: reads the read's own bases at `resources/models/
-  c4_form_signature.yaml`'s data-derived exon 26 discriminating positions
-  (fitted from 362 real per-haplotype Immuannot-labelled sequences,
-  `resources/models/build_c4_form_signature.py` -- see that script's own
-  docstring) via the same PAF-CIGAR alignment reconstruction
-  stages/error_model.py's context scorer uses, and votes A/B by which
-  consensus base the read actually carries. A read whose alignment doesn't
-  reach a majority of the (5, in the real fitted signature) discriminating
-  positions is reported uninformative, not guessed at.
-- **Long vs short**: checks whether the read's winning candidate's own
-  alignment span geometrically covers intron 9's boundary (in that
-  candidate's own local coordinates, from `c4.models.jsonl.gz`) with a
-  margin on both flanks, and if so reports that candidate's own real form
-  label. No new alignment work -- if the read's true form didn't match the
-  winning candidate's form, minimap2 would not have produced a clean,
-  fully-spanning low-mismatch alignment across a real ~6.4kb length
-  difference in the first place (this pipeline's existing
-  max_read_mismatch_rate gate, stages/assign.py, already screens those out
-  upstream), so the geometric-overlap gate is what separates "read actually
-  crossed the insertion site" from "read landed entirely outside it and
-  says nothing about form" -- DESIGN.md's own framing ("observed directly
-  from reads that span it").
+- A vs B: the read's bases at the fitted exon-26 discriminating positions
+  (resources/models/c4_form_signature.yaml) vote A or B. Reads covering
+  fewer than a majority of positions are uninformative.
+- Long vs short: if the alignment spans the candidate's intron 9 with a
+  margin on both sides, report the candidate's form (a clean alignment
+  can't cross the ~6.4kb HERV length difference with the wrong form).
 
-Both classifiers report an explicit uninformative bucket rather than forcing
-every read into a call (same "loud, not silent" stance as everywhere else in
-this project) and are reported as raw counts/fractions, not a hard genotype
--- a factual tally of what the reads show, not a claim of a validated A/B or
-long/short genotype call.
+Both report raw counts with an uninformative bucket, not a genotype.
 """
 from __future__ import annotations
 
@@ -69,12 +39,7 @@ DEFAULT_C4_MODELS = REPO_ROOT / "resources" / "templates" / "assembly_bundle" / 
 
 _FORM_RE = re.compile(r"^form=(long|short) \(")
 
-# Reused from input/fastq.py's own edge-proximity margin convention (its
-# 200bp "close to an anchor's end" rescue clause), not independently
-# re-derived for this specific evidentiary bar -- same "reused for
-# consistency with an already-accepted provisional call" pattern
-# stages/genotype.py's narrow_candidates_by_mismatch_rate() already uses
-# (invariant 11: flagged, not presented as fitted).
+# Flank margin around intron 9, reused from fastq.py's 200bp edge rule.
 _INTRON9_MARGIN_BP = 200
 
 
@@ -116,12 +81,8 @@ def load_c4_form_signature(path: Path = DEFAULT_SIGNATURE_PATH) -> C4FormSignatu
 
 @dataclass(frozen=True)
 class C4AlleleAnnotation:
-    """Per-allele real structure needed by both classifiers below, read
-    from the C4 bundle's own meta/models files (resources/templates/
-    build_c4_bundle.py) -- `exon26`/`intron9` are 1-based inclusive in this
-    specific allele's own local sequence numbering (sources.py's GeneModel
-    convention), not a shared reference coordinate; `form` is parsed from
-    the bundle's own "form=long/short (...)" description tag."""
+    """Per-allele exon 26 / intron 9 (1-based inclusive, allele-local
+    coordinates) and form from the C4 bundle."""
 
     gene: str
     form: str | None
@@ -175,12 +136,8 @@ def load_c4_allele_sequences(pool_fasta: Path = DEFAULT_C4_POOL_FASTA) -> dict[s
 def _best_allele_cell_per_read(
     c4_matrices: dict[str, GeneAssignmentMatrix],
 ) -> dict[str, tuple[str, str, AlignmentSpan]]:
-    """Every C4 read's single best-matching (gene, allele) cell across BOTH
-    C4A and C4B matrices combined, by lowest mismatch rate -- ties broken
-    alphabetically by (gene, allele) (invariant 9). Iterates only
-    `spans` (real alignments), never the dense zero-filled matrix cells.
-    Module docstring: this is an *alignment-coordinate* anchor for both
-    classifiers below, not an A-vs-B/long-vs-short signal on its own."""
+    """Each read's best (gene, allele) cell across C4A and C4B by mismatch
+    rate (ties alphabetical); an alignment anchor, not a call."""
     candidates: dict[str, list[tuple[float, str, str, AlignmentSpan]]] = {}
     for gene in sorted(c4_matrices):
         m = c4_matrices[gene]
@@ -203,10 +160,7 @@ def _best_allele_cell_per_read(
 def _ref_positions_to_read_bases(
     aligned_ref: str, aligned_read: str, ref_start: int, positions: list[int],
 ) -> dict[int, str | None]:
-    """Map absolute (0-based) reference positions to the read's own base at
-    each, via a single pass over the gapped alignment strings
-    (stages/error_model.py's build_aligned_strings) -- None where that
-    position falls in a read-side deletion (no base to vote with)."""
+    """Read base at each 0-based reference position, None in a deletion."""
     wanted = {p - ref_start: p for p in positions}
     out: dict[int, str | None] = {}
     consumed = 0
@@ -235,11 +189,9 @@ def classify_a_vs_b(
     signature: C4FormSignature,
     allele_sequences: dict[str, str],
 ) -> C4AbCall:
-    """Module docstring. A read needs its winning candidate's own exon 26
-    to exist, its alignment span to cover a majority of the signature's
-    discriminating positions, and a real (non-deletion) base at a majority
-    of those covered positions favouring one side -- anything short of
-    that is uninformative, not forced into a call."""
+    """A read votes only if its candidate has exon 26, it covers a majority
+    of the discriminating positions, and a majority of covered real bases
+    favour one side; otherwise uninformative."""
     best = _best_allele_cell_per_read(c4_matrices)
     n_positions = len(signature.discriminating_positions)
     min_covered = (n_positions + 1) // 2
@@ -293,10 +245,7 @@ def classify_a_vs_b(
 
 @dataclass(frozen=True)
 class C4PerGeneCN:
-    """CN_A/CN_B (user-requested, 2026-08-27): a *proportional split* of
-    the combined Phase 1 total-C4 CN by the Phase 2 exon 26 vote ratio, not
-    an independently-measured per-gene depth. See estimate_c4_per_gene_cn()
-    for why a real per-gene depth-ratio estimate isn't used instead."""
+    """CN_A/CN_B: total C4 CN split by the Phase 2 vote ratio."""
     cn_a: float | None
     cn_a_ci_low: float | None
     cn_a_ci_high: float | None
@@ -306,50 +255,21 @@ class C4PerGeneCN:
 
 
 def _implied_relative_se(cn_estimate: float, ci_high: float) -> float:
-    """Recover the relative SE that produced `ci_high = cn_estimate * (1 +
-    1.96*rel_se)` (stages/cn.py's and stages/c4_cn.py's own CI convention)
-    -- uses the *upper* bound, not the lower, because `ci_low` is clipped
-    at 0 (`max(0.0, ...)`) and so can't always be inverted cleanly."""
+    """Relative SE from `ci_high = cn * (1 + 1.96 * rel_se)` (ci_low is
+    clipped at 0)."""
     if cn_estimate <= 0:
         return 0.0
     return (ci_high / cn_estimate - 1.0) / 1.96
 
 
 def estimate_c4_per_gene_cn(total_c4_cn: GeneCN, ab_call: C4AbCall) -> C4PerGeneCN:
-    """CN_A = total_CN x a_fraction, CN_B = total_CN x (1 - a_fraction).
+    """CN_A = total x a_fraction, CN_B = total x (1 - a_fraction).
 
-    **Why a split of the total, not an independent per-gene depth-ratio
-    estimate.** `ab_call.n_a`/`n_b` are read counts at one narrow ~157bp
-    exon (26), not distinct-read counts over the whole ~20kb gene body the
-    way stages/c4_cn.py's `depth` is defined -- and classify_a_vs_b()'s own
-    evidentiary gate (a read must cover a majority of the signature's
-    discriminating positions with real, non-deletion bases) systematically
-    excludes real reads that do overlap the site but don't clear that bar.
-    Plugging `n_a`/`n_b` directly into the same depth-ratio formula would
-    therefore underestimate both genes by an uncalibrated amount. Splitting
-    the already length-corrected combined total by the *ratio* n_a/(n_a+n_b)
-    sidesteps that: the undercounting should affect A- and B-origin reads
-    symmetrically (the two genes are >99% identical outside the signature's
-    own 5 positions, so nothing about the gate's coverage requirement
-    should favour one over the other) -- flagged as an assumption, not
-    independently verified, invariant 11.
-
-    **CI, real caveats.** Combines two normal-approximation relative SEs in
-    quadrature: `total_c4_cn`'s own (backed out from its CI via
-    `_implied_relative_se()`) and the vote fraction's own binomial SE
-    (`sqrt(p(1-p)/n)`, n = n_a+n_b) -- treating the two as independent is
-    an approximation (they're computed from overlapping but not identical
-    read sets), and the binomial SE formula understates uncertainty right
-    at n_a=0 or n_b=0 (a Wilson interval would not, but this project's own
-    CI convention elsewhere is already this same first-cut normal
-    approximation, not Wilson -- consistent, not gold-standard). At the
-    read counts this project expects at UKB's target 15X, `n_a+n_b` can be
-    small enough that this split has real, sometimes wide, uncertainty --
-    report the CI, never just the point estimate.
-
-    Returns all-None fields when either input lacks a usable estimate
-    (`total_c4_cn.cn_estimate is None` or `ab_call.a_fraction is None`,
-    i.e. zero informative reads) -- no guess in place of missing data."""
+    The vote counts come from one ~157bp exon behind a strict coverage gate,
+    so they undercount; their ratio is used instead, assuming the gate hits
+    A and B reads alike. The CI combines the total's relative SE and the
+    binomial SE of the fraction in quadrature (approximate; wide at low
+    counts). All None if either input is unavailable."""
     if total_c4_cn.cn_estimate is None or ab_call.a_fraction is None:
         return C4PerGeneCN(
             cn_a=None, cn_a_ci_low=None, cn_a_ci_high=None,
@@ -394,10 +314,8 @@ def classify_long_vs_short(
     *,
     margin_bp: int = _INTRON9_MARGIN_BP,
 ) -> C4FormLengthCall:
-    """Module docstring: a read is only informative if its winning
-    candidate's alignment span geometrically clears both flanks of that
-    candidate's own intron 9 window by `margin_bp` -- a read that never
-    reaches the insertion site says nothing about which form it carries."""
+    """A read is informative only if its alignment clears both flanks of its
+    candidate's intron 9 by `margin_bp`."""
     best = _best_allele_cell_per_read(c4_matrices)
     n_long = n_short = n_uninformative = 0
 
@@ -435,10 +353,8 @@ def estimate_c4_form(
     models_path: Path = DEFAULT_C4_MODELS,
     pool_fasta: Path = DEFAULT_C4_POOL_FASTA,
 ) -> tuple[C4AbCall, C4FormLengthCall]:
-    """Convenience entry point stages/pipeline.py calls: loads the shipped
-    signature/annotations/sequences and runs both classifiers over the same
-    Stage 1 C4 matrices stages/c4_cn.py already builds (no new alignment
-    work)."""
+    """Load the shipped signature/annotations/sequences and run both
+    classifiers on the existing C4 matrices."""
     signature = load_c4_form_signature(signature_path)
     annotations = load_c4_allele_annotations(meta_path, models_path)
     allele_sequences = load_c4_allele_sequences(pool_fasta)

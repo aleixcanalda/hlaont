@@ -1,9 +1,5 @@
-"""Unit tests for stages/c4_form.py's C4A/C4B Phase 2 discrimination
-(DESIGN.md S2f) -- A-vs-B by exon 26 signature positions, long-vs-short by
-intron 9 span coverage. Synthetic matrices/annotations throughout (no real
-minimap2/bundle data needed); the real signature-fitting logic is covered
-separately by resources/models/test_build_c4_form_signature.py.
-"""
+"""Unit tests for stages/c4_form.py (A/B by exon 26, long/short by intron 9)
+on synthetic matrices."""
 from __future__ import annotations
 
 import sys
@@ -181,10 +177,7 @@ def test_classify_long_vs_short_uninformative_with_no_form_or_intron9():
 
 
 def test_estimate_c4_per_gene_cn_splits_total_by_vote_ratio():
-    # Real HG00097 numbers (2026-08-27 session): total CN 4.05 (CI up to
-    # 5.45), 13 A-votes / 24 B-votes -- ground truth is 2/2, so this checks
-    # the split's *math*, not that it recovers truth exactly (small-N vote
-    # noise is the documented, expected limitation).
+    # HG00097 numbers: total 4.05, 13 A / 24 B (truth 2/2); checks the math.
     total = _c4_gene_cn(4.050515059272021, ci_low=2.6465380651197754, ci_high=5.454492053424267)
     ab = C4AbCall(n_a=13, n_b=24, n_uninformative=80, a_fraction=13 / 37)
     result = estimate_c4_per_gene_cn(total, ab)

@@ -1,13 +1,5 @@
-"""Unit tests for Stage 1 CN estimation (DESIGN.md S1).
-
-**2026-09-01, second revision (same day as the first):** `stage0_depth_by_
-gene()` reconstructs real aligned bases from Stage 0's own sieve alignment
-(`AnchorHit.coverage * anchor_length`) instead of a second, independent
-minimap2/samtools-depth pass -- see that function's own docstring for why
-(a real bug in the first revision, and the user's own redirect to reuse
-Stage 0's already-`-N`-256-safe alignment instead of redoing it). Back to
-fast, pure-Python tests, no real minimap2/samtools calls needed here.
-"""
+"""Unit tests for Stage 1 CN estimation (DESIGN.md S1); pure Python, no
+minimap2."""
 from __future__ import annotations
 
 import gzip
@@ -40,10 +32,7 @@ _MANIFEST = {
     ]
 }
 
-# The chr17-control depth every test in this file normalises against
-# (2026-09-01 revision, cn.py's own docstring) -- an arbitrary but fixed
-# value, not a magic number tied to any one test's expectations; each
-# test derives its own expected cn_estimate as 2*depth/this value.
+# Control depth used throughout; expected CN = 2 * depth / this.
 _CONTROL_DEPTH = 4.5
 
 _ANCHOR_LEN = 500
@@ -163,10 +152,7 @@ def test_every_manifest_gene_gets_its_own_entry(tmp_path):
 
 
 def test_no_control_signal_returns_none_not_zero(tmp_path):
-    """2026-09-01 revision: a gene with real depth but no chr17-control
-    signal this run (control_depth None/0 -- e.g. a --bam-derived FASTQ
-    that never pulled chr17 reads) must not silently normalise to a bogus
-    CN=0 -- invariant 4."""
+    """No control depth -> cn_estimate None, not 0 (invariant 4)."""
     genes_yaml = _write_manifest(tmp_path)
     reads, lengths = _full_coverage_reads("TESTNOCAL", 5)
     anchors_meta = _write_anchors_meta(tmp_path, lengths)
@@ -184,10 +170,7 @@ def test_no_control_signal_returns_none_not_zero(tmp_path):
 
 
 def test_no_class_split_same_control_depth_normalises_class_i_and_ii(tmp_path):
-    """2026-09-01 revision: one sample-wide chr17-control depth replaces
-    the old per-class (I vs II) calibrator-panel median entirely -- a
-    class II gene must be normalised against the exact same control_depth
-    as a class I gene in the same run, not a class-specific value."""
+    """Class I and II genes use the same control depth."""
     genes_yaml = _write_manifest(tmp_path)
     a_reads, a_lengths = _full_coverage_reads("TESTA", 6)
     dra_reads, dra_lengths = _full_coverage_reads("TESTDRA", 6)
@@ -224,10 +207,7 @@ def test_estimate_cn_is_deterministic(tmp_path):
 
 
 def test_stage0_depth_is_real_aligned_bases_over_mean_anchor_length(tmp_path):
-    """Every read here is an exact, full-length (coverage=1.0) hit against
-    its own gene's 500bp anchor -- aligned bases == anchor length, so
-    depth == read count exactly, the base case this module's whole
-    2026-09-01 revision is built on."""
+    """Full-length exact hits: depth equals read count."""
     h_reads, h_lengths = _full_coverage_reads("TESTH", 5)
     y_reads, y_lengths = _full_coverage_reads("TESTY", 3)
     anchors_meta = _write_anchors_meta(tmp_path, {**h_lengths, **y_lengths})
@@ -250,11 +230,7 @@ def test_stage0_depth_counts_ambiguous_read_fully_toward_every_gene_it_hits(tmp_
 
 
 def test_stage0_depth_dedupes_within_gene_across_multiple_anchor_hits(tmp_path):
-    """A single read can carry >1 qualifying AnchorHit for the same gene
-    (different anchor allele representatives) -- must count once per gene
-    at that read's own best-covering hit, not sum both (real HG00320 data
-    showed this silently doubling raw per-gene counts, in the read-count
-    predecessor of this mechanism -- module docstring)."""
+    """A read hitting two anchors of one gene counts once (best hit)."""
     anchors_meta = _write_anchors_meta(tmp_path, {"TESTH-anchor-1": 500, "TESTH-anchor-2": 500})
     hits = (
         _hit("TESTH", "TESTH-anchor-1", 1.0),
@@ -268,12 +244,7 @@ def test_stage0_depth_dedupes_within_gene_across_multiple_anchor_hits(tmp_path):
 
 
 def test_stage0_depth_pools_by_mean_not_sum_of_anchor_lengths(tmp_path):
-    """A gene with several target anchors: depth is pooled by the *mean*
-    of every one of that gene's own anchor lengths (whether or not any
-    read actually hit it), not their sum -- real regression this project
-    hit once already (module docstring, 2026-08-31 entry): summing would
-    understate depth by roughly the anchor count whenever only one anchor
-    is actually the sample's real allele, which is the typical case."""
+    """Depth divides by the mean, not the sum, of the gene's anchor lengths."""
     anchors_meta = _write_anchors_meta(tmp_path, {
         "TESTH-anchor-1": 500, "TESTH-anchor-2": 500, "TESTH-anchor-3": 500,
     })
@@ -294,10 +265,7 @@ def test_stage0_depth_partial_coverage_scales_aligned_bases(tmp_path):
 
 
 def test_stage0_depth_no_data_for_gene_missing_from_anchors_meta(tmp_path):
-    """A gene absent from anchors.meta.tsv.gz's length column (e.g. a
-    synthetic test fixture that predates it) contributes nothing, rather
-    than crashing -- same graceful-degradation contract this module has
-    always used."""
+    """A gene without anchor lengths contributes nothing (no crash)."""
     anchors_meta = _write_anchors_meta(tmp_path, {"TESTE-anchor": 500})  # TESTH absent
     reads = [_read("r1", (_hit("TESTH", "TESTH-anchor", 1.0),))]
     depth = stage0_depth_by_gene(reads, anchors_meta_path=anchors_meta)

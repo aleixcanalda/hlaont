@@ -51,10 +51,8 @@ def test_consensus_recovers_a_real_haplotype_substitution(tmp_path):
     allele_b = _mutate(allele_a, 5, random.Random(7))
     fasta, meta = _build_pool(tmp_path, allele_a, allele_b)
 
-    # Every read from haplotype A carries the SAME extra substitution at
-    # position 200 relative to the selected template (allele_a itself) --
-    # a real biological difference the template can't represent, which is
-    # exactly what consensus polishing exists to recover.
+    # All haplotype-A reads carry a substitution at 200 absent from the
+    # template; polishing should recover it.
     true_hap_a = _substitute(allele_a, 200)
     reads = (
         [_candidate_read(f"a{i}", true_hap_a, "GENE1") for i in range(12)]
@@ -113,10 +111,8 @@ def test_consensus_recovers_an_insertion(tmp_path):
 
 
 def test_consensus_variant_dissent_counts_real_minority_reads(tmp_path):
-    """2026-09-13: `ConsensusVariant.dissent` (added for stages/novelty.py's
-    read-support filter) must reflect the real minority-vote count, not
-    just depth -- a mix of 9 reads calling the real substitution and 3
-    reads still reading the template base at the same position."""
+    """`dissent` counts minority reads: 9 call the substitution, 3 the
+    template base."""
     rng = random.Random(5)
     allele_a = _random_seq(500, rng)
     allele_b = _mutate(allele_a, 5, random.Random(13))

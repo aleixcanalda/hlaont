@@ -72,14 +72,7 @@ def test_write_calls_tsv(tmp_path):
 
     with open(out) as fh:
         rows = list(csv.DictReader(fh, delimiter="\t"))
-    # 2026-08-26/27, user-requested, revised repeatedly per follow-up
-    # feedback (output.py's write_calls_tsv docstring has the full history):
-    # one extra row, "C4" -- no per-haplotype call exists for it (DESIGN.md
-    # S2f), and no `haplotype_index` column at all any more (this pipeline
-    # never phases reads). 2026-09-01, user-requested: "C4A"/"C4B" (the
-    # proportional vote-ratio split) dropped from this file entirely -- this
-    # fixture disables chr17-control (`compute_c4_chr17_control=False`), so
-    # no "C4AL"/"C4AS"/"C4BL"/"C4BS" rows appear here either; just "C4".
+    # Only one extra row, "C4" (chr17-control disabled in this fixture).
     assert "haplotype_index" not in rows[0]
     haplotype_rows = [r for r in rows if r["gene"] not in C4_EXTRA_CALLS_TSV_GENES]
     c4_rows_by_gene = {r["gene"]: r for r in rows if r["gene"] in C4_EXTRA_CALLS_TSV_GENES}
@@ -145,10 +138,7 @@ def test_write_qc_json(tmp_path):
     assert obj["sieve_stats"]["n_kept"] == 40
     assert obj["dorado_version"] == "7.1.0"
     assert obj["reference_build_md5"] is None
-    # "C4" (stages/c4_cn.py, DESIGN.md S2f) is always present -- a separate
-    # build_gene_matrices() call against the real C4 bundle, unaffected by
-    # this fixture's synthetic GENE1/CALIB1 pool/anchors; zero depth here
-    # since neither is tagged C4A/C4B.
+    # "C4" is always in gene_cn (zero depth here).
     assert set(obj["gene_cn"]) == {"GENE1", "CALIB1", "C4"}
     assert obj["gene_cn"]["GENE1"]["cn_estimate"] == 2.0
     assert obj["gene_cn"]["C4"]["depth"] == 0
@@ -233,12 +223,8 @@ def test_write_calls_tsv_haplotype_column_phased_mode(tmp_path):
     assert len(calib1_rows) == 2
     assert all(r["haplotype"] == "unphased" for r in calib1_rows)
 
-    # DESIGN.md S10.6, revised 2026-08-27: the sample-wide C4 rows now carry
-    # "unphased" (not blank) in phased mode, same vocabulary as any other
-    # fallback-routed gene -- this fixture's C4 never recruits a real read
-    # (no C4A/C4B anchor in _run_phased's fixture), so there are no extra
-    # per-haplotype C4A/C4B rows here (see test_c4_phased_output.py-style
-    # coverage below for that case).
+    # Sample-wide C4 rows are labelled "unphased"; no C4 reads here, so no
+    # per-haplotype rows.
     c4_rows = [r for r in rows if r["gene"] in C4_EXTRA_CALLS_TSV_GENES]
     assert all(r["haplotype"] == "unphased" for r in c4_rows)
 
@@ -260,10 +246,8 @@ def test_write_qc_json_phasing_block(tmp_path):
 
 
 def _low_qv_call(gene: str = "DRB4LIKE", haplotype_index: int = 1) -> HaplotypeCallResult:
-    """A synthetic real-HG00097-shaped noise call (HLA-DRB4*01:new, 4 reads,
-    mean_qv 5.0, 37 variants, user-requested 2026-08-27 finding) -- exists
-    purely to check write_calls_tsv()'s min_mean_qv filter without needing
-    the full pipeline to reproduce a genuinely thin consensus."""
+    """Synthetic noise call (HLA-DRB4*01:new shape: 4 reads, mean_qv 5.0)
+    for the min_mean_qv filter."""
     return HaplotypeCallResult(
         gene=gene, haplotype_index=haplotype_index, cn=1,
         called_allele=f"{gene}*01:new", proposed_name=f"{gene}*01:new",
@@ -275,10 +259,8 @@ def _low_qv_call(gene: str = "DRB4LIKE", haplotype_index: int = 1) -> HaplotypeC
 
 
 def _extension_partial_call(gene: str = "HLA-C", haplotype_index: int = 1) -> HaplotypeCallResult:
-    """Real HG03009/HLA-C*07:457 shape (2026-09-21): Stage 2/4 aligned
-    against the genomic template HLA-C*07:02:01:01 (called_allele), but
-    Stage 5's extension:partial gate found the consensus's CDS exactly
-    matches the real, partially-catalogued IPD allele HLA-C*07:457 instead."""
+    """HLA-C*07:457 shape: template HLA-C*07:02:01:01, CDS matching the
+    partial allele HLA-C*07:457."""
     return HaplotypeCallResult(
         gene=gene, haplotype_index=haplotype_index, cn=2,
         called_allele=f"{gene}*07:02:01:01", proposed_name=f"{gene}*07:457:new",
@@ -291,11 +273,8 @@ def _extension_partial_call(gene: str = "HLA-C", haplotype_index: int = 1) -> Ha
 
 
 def test_write_calls_tsv_extension_partial_shows_extension_allele_as_template(tmp_path):
-    """User-requested, 2026-09-21: an extension:partial call's
-    `template_allele` column must show the real matched partial allele
-    (`extension_allele`), not the genomic alignment template
-    (`called_allele`) -- `allele`/`taxonomy` are unaffected, same display-
-    only precedent as the assembly-extraction gtf_template_allele case."""
+    """extension:partial shows `extension_allele` as template_allele;
+    allele/taxonomy unchanged."""
     result, _ = _run(tmp_path)
     call = _extension_partial_call()
     result = dataclasses.replace(result, haplotype_calls=result.haplotype_calls + (call,))
@@ -370,15 +349,7 @@ def test_write_qc_json_filtered_calls_empty_when_nothing_filtered(tmp_path):
 
 
 def test_write_calls_tsv_no_per_haplotype_c4_ab_rows(tmp_path):
-    """DESIGN.md S10.6 originally added per-haplotype "C4A"/"C4B" rows when
-    C4's own GenePhaseRouting routes "phased" -- 2026-09-01, user-requested:
-    "C4A"/"C4B" (the proportional vote-ratio split) dropped from calls.tsv
-    entirely, sample-wide and per-haplotype alike (output.py's
-    write_calls_tsv docstring has the full rationale). Populating
-    c4_phased_ab_calls/c4_phased_form_calls must not produce any "C4A"/"C4B"
-    row -- injected here via dataclasses.replace() rather than a full
-    C4-recruiting pipeline run (already covered end-to-end in
-    stages/test_pipeline.py)."""
+    """Per-haplotype A/B calls produce no "C4A"/"C4B" rows."""
     result, _ = _run_phased(tmp_path)
     c4_routing = GenePhaseRouting(
         gene="C4", routing="phased", reason="single PS phase block, HP-tagged reads present",
@@ -405,24 +376,14 @@ def test_write_calls_tsv_no_per_haplotype_c4_ab_rows(tmp_path):
         rows = list(csv.DictReader(fh, delimiter="\t"))
 
     assert not any(r["gene"] in ("C4A", "C4B") for r in rows)
-    # Sample-wide aggregate "C4" row is still present, unphased-labelled --
-    # c4_phased_cn is not set in this fixture, so no per-haplotype "C4" row
-    # appears either (see test_write_calls_tsv_per_haplotype_c4_cn_rows for
-    # that case).
+    # Aggregate "C4" row present; no per-haplotype "C4" row without c4_phased_cn.
     aggregate_c4_rows = [r for r in rows if r["gene"] in C4_EXTRA_CALLS_TSV_GENES and r["haplotype"] == "unphased"]
     assert {r["gene"] for r in aggregate_c4_rows} == {"C4"}
 
 
 def test_write_calls_tsv_per_haplotype_c4_cn_rows(tmp_path):
-    """DESIGN.md S10.5/S10.6, added 2026-08-28: when this haplotype's own
-    PS-matched calibrator panel produced a real cn_estimate
-    (c4_phased_cn populated), an extra per-haplotype "C4" row appears --
-    injected via dataclasses.replace() rather than a full
-    calibrator-recruiting pipeline run (already covered end-to-end in
-    stages/test_pipeline.py). 2026-09-01, user-requested: no "C4A"/"C4B"
-    row (per-haplotype or otherwise) is written any more, so
-    c4_phased_per_gene_cn is populated here only to confirm it does NOT
-    leak into a row."""
+    """c4_phased_cn adds a per-haplotype "C4" row; c4_phased_per_gene_cn
+    produces no "C4A"/"C4B" rows."""
     result, _ = _run_phased(tmp_path)
     c4_routing = GenePhaseRouting(
         gene="C4", routing="phased", reason="single PS phase block, HP-tagged reads present",
@@ -526,10 +487,7 @@ def test_write_qc_json_c4_per_haplotype_cn_block(tmp_path):
 
 
 def test_write_qc_json_c4_per_haplotype_none_when_not_phased(tmp_path):
-    """This fixture's C4 never recruits a real read (no C4A/C4B anchor),
-    so C4's own GenePhaseRouting stays "unphased_fallback" and
-    c4_phased_ab_calls is None -- per_haplotype must be None too, not an
-    empty dict implying a phased-but-empty result."""
+    """Unphased C4 -> per_haplotype is None, not an empty dict."""
     result, _ = _run_phased(tmp_path)
     qc_path = tmp_path / "qc_no_c4_phasing.json"
     write_qc_json(result, qc_path)

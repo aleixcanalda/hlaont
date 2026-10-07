@@ -1,48 +1,11 @@
 #!/usr/bin/env python3
-"""Extract C4A/C4B templates from a real hla_seq/ directory for the C4 copy
-number module (DESIGN.md S2f) -- writes a small, standalone bundle
-(assembly_bundle/c4.{fa,meta.tsv}.gz) that resources/anchors/prepare_candidates.py
-reads for anchor candidates, and that stages/c4_cn.py reads as a Stage 1
-alignment pool. This is a SEPARATE mechanism from build_assembly_bundle.py's
-HLA-N/P/T/U/W/Y/R bundle and from resources/templates/build.py's IPD-driven
-star-allele pool: DESIGN.md S2f is explicit that C4A/C4B have no star-allele
-nomenclature and must not be routed through that pool at all (invariant 5 --
-this is why the outputs land in separate files, not folded into ref.gene.*).
+"""Extract C4 templates from hla_seq/ into assembly_bundle/c4.{fa,meta.tsv,
+models.jsonl}.gz: the C4 alignment pool (stages/c4_cn.py), anchor
+candidates (prepare_candidates.py) and exon 26 / intron 9 coordinates
+(c4_form.py). Kept apart from the star-allele pool (DESIGN.md S2f).
 
-Real per-haplotype hla_seq/ GTFs (confirmed directly, not assumed) carry
-gene_name rows for C4 already split into long/short form by Immuannot's own
-annotation: C4AL, C4AS, C4BL, C4BS (long form's ~20kb genomic span includes
-the ~6.4kb HERV-K intron-9 insertion DESIGN.md S2f names; short form's ~14kb
-span doesn't). AssemblyGTFSource extracts these exactly like any other
-assembly-derived gene -- full gene body, real exon/intron/UTR structure, real
-per-haplotype dedup.
-
-This script then collapses the four real forms down to two gene buckets,
-C4A and C4B, matching resources/genes.yaml's two structural-gene entries
-(DESIGN.md S2f: "Total C4 CN" is one segment-level readout, A-vs-B is a
-discrimination call on top of it, not two independently-counted genes --
-there is no manifest entry for "C4AL" etc. to preserve identity against).
-The real long/short form is kept in each record's own `description` for
-provenance/future use, not dropped -- but `gene`/`allele` are renamed
-(C4AL/C4AS -> C4A*asm<hash>, C4BL/C4BS -> C4B*asm<hash>) so every consumer
-that derives gene from allele.split("*")[0] (resources/anchors/build.py's
-allele_and_gene()) agrees with this bundle's own `gene` column. This is a
-deliberately coarser unit than the NPTUWYR bundle's per-form fidelity --
-Stage 1's per-read matrix (stages/assign.py) only needs the two gene buckets
-to recruit reads and count total depth (Phase 1 scope: total C4 CN via
-depth ratio, see stages/c4_cn.py).
-
-**2026-08-26 Phase 2 addition:** also writes `c4.models.jsonl.gz`
-(build.py's own `write_gene_models_jsonl_gz`, same shape/keying as the
-NPTUWYR bundle's `bundle.models.jsonl.gz`) -- each record's real
-per-haplotype exon/intron structure (`AssemblyGTFSource` already produces
-this; it just wasn't being written out before this addition).
-`stages/c4_form.py` (the A-vs-B exon-26 / long-vs-short intron-9
-discriminator DESIGN.md S2f names) needs real exon 26 and intron 9
-boundaries in each individual real sequence's own local coordinate frame --
-these differ slightly haplotype to haplotype, so a single fixed offset
-would not transfer across records the way a shared reference coordinate
-system might.
+Immuannot labels C4AL/C4AS/C4BL/C4BS; these are collapsed to genes C4A/C4B
+(gene and allele renamed, form kept in `description`) to match genes.yaml.
 
     python build_c4_bundle.py --hla-seq-dir /path/to/hla_seq
 """
@@ -66,9 +29,7 @@ _FORM_LABEL = {"C4AL": "long", "C4AS": "short", "C4BL": "long", "C4BS": "short"}
 
 
 def _collapse_to_c4a_c4b(records):
-    """Rename each record's gene/allele from its real form (C4AL/C4AS/C4BL/
-    C4BS) to the two genes.yaml buckets (C4A/C4B), keeping the real form as
-    an explicit description note -- see module docstring for why."""
+    """Rename C4AL/AS/BL/BS records to C4A/C4B; form goes in description."""
     out = []
     for r in records:
         bucket = _C4_FORM_GENES[r.gene]

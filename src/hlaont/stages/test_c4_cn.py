@@ -68,10 +68,7 @@ def _classical_matrices(depths: dict[str, int]) -> dict[str, GeneAssignmentMatri
 
 
 def test_calibrator_genes_for_c4_is_class_i_only(tmp_path):
-    """DESIGN.md S10.5/S10.6: this is the exact gene set stages/pipeline.py's
-    per-haplotype PS-matching check (_c4_calibrator_reads_for_haplotype)
-    must agree with -- factored out of estimate_c4_cn() rather than
-    reimplemented so the two can never drift apart."""
+    """Class I calibrator set, shared with pipeline's per-haplotype check."""
     manifest_path = _write_manifest(tmp_path)
     assert calibrator_genes_for_c4(manifest_path) == ["TESTA", "TESTE"]
 
@@ -156,13 +153,8 @@ def _reads_of_length(prefix: str, n: int, length: int) -> dict[str, str]:
 
 
 def test_estimate_c4_cn_length_correction_pulls_estimate_down_for_a_long_target(tmp_path):
-    """2026-08-26, user-directed real-data root-cause fix (module docstring
-    on the correction). C4's synthetic target here (20000bp) is far longer
-    than its own recruited reads (12000bp, f=(20000+12000)/12000=2.667);
-    the calibrator genes' targets (3000/3200bp) are short relative to
-    theirs (30000bp, f~1.1). The correction must pull cn_estimate well
-    below the raw (uncorrected) formula's value -- same direction as the
-    real HG00097 finding (5.32 -> ~4)."""
+    """Long C4 target (20kb, 12kb reads: factor 2.667) vs short calibrators
+    (factor ~1.1): the correction lowers cn_estimate."""
     genes_yaml = _write_manifest(tmp_path)
     c4_matrices = {"C4A": _matrix("C4A", tuple(f"c{i}" for i in range(6)))}
     classical = _classical_matrices({"TESTA": 6, "TESTE": 3})
@@ -194,10 +186,7 @@ def test_estimate_c4_cn_length_correction_pulls_estimate_down_for_a_long_target(
 
 
 def test_estimate_c4_cn_length_correction_is_a_noop_without_matching_meta_rows(tmp_path):
-    """A gene with reads supplied but no matching row in the pool meta
-    (e.g. a manifest/pool mismatch) must fall back to factor 1.0 for that
-    gene, not crash -- _length_inflation_factor()'s module-docstring
-    contract."""
+    """Reads but no matching meta row -> factor 1.0, no crash."""
     genes_yaml = _write_manifest(tmp_path)
     c4_matrices = {"C4A": _matrix("C4A", tuple(f"c{i}" for i in range(6)))}
     classical = _classical_matrices({"TESTA": 6, "TESTE": 3})

@@ -1,9 +1,5 @@
-"""Unit tests for GeneModel parsing (sources.py's FT feature-table extension).
-
-Synthetic hla.dat-shaped fixtures, not the real IPD file -- covers the
-class-I-like multi-exon join(...) shape, a single-exon CDS (no join()),
-and the partial/excluded-gene paths that must still work unchanged.
-"""
+"""Unit tests for GeneModel parsing on synthetic hla.dat fixtures
+(multi-exon, single-exon, partial/excluded genes)."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -51,11 +47,8 @@ FT                   /number="1"
 FT   UTR             350..400
 """
 
-# Real-shaped partial (exon-subset) submission -- HLA-C*07:457's own IPD
-# record (HLA14025) is exactly this: join(<1..73,74..150) covering only
-# exons 2-3, no exon 1/introns/UTRs at all, /codon_start offset mid-codon
-# from the truncated 5' end, and the literal /partial qualifier that
-# _handle_ft_line() keys off of.
+# Partial record shaped like HLA-C*07:457 (HLA14025): exons 2-3 only,
+# mid-codon codon_start, /partial.
 _PARTIAL_FT = """\
 FT   source          1..150
 FT   CDS             join(<1..73,74..150)

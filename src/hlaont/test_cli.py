@@ -1,8 +1,4 @@
-"""End-to-end test for cli.py, reusing stages/test_pipeline.py's synthetic
-two-gene fixture builders. Colocated at repo root (alongside cli.py itself)
-per the development notes' "unit tests alongside code" convention -- tests/ is
-reserved for the not-yet-existing HPRC integration fixtures.
-"""
+"""End-to-end tests for cli.py using test_pipeline.py's synthetic fixtures."""
 from __future__ import annotations
 
 import csv
@@ -57,11 +53,7 @@ def _build_fixture(tmp_path):
         + [(f"b{i}", allele_b) for i in range(10)]
         + [(f"ca{i}", calib_a) for i in range(10)]
         + [(f"cb{i}", calib_b) for i in range(10)]
-        # A handful of reads matching the synthetic chr17 control fixture --
-        # this test drives the real CLI path (--chr17-control-fasta below),
-        # so it needs real, nonzero control signal in the FASTQ itself to
-        # get past cn.py's 2026-09-01 "no control signal" loud-None branch
-        # and exercise real Stage 2-5 typing, not just a graceful failure.
+        # Reads matching the synthetic chr17 control, so CN is defined.
         + [(f"chr17_{i}", chr17_control_seq) for i in range(5)]
     )
     fastq_path = _write_fastq(tmp_path, reads)
@@ -122,17 +114,8 @@ def _write_bam_and_reference(
     tmp_path, reads: list[tuple[str, str]],
     *, phase_tags: dict[str, tuple[int, int]] | None = None,
 ):
-    """A source BAM of unmapped reads only -- extract_mini_bam pulls every
-    unmapped read via samtools' "*" pseudo-region regardless of RegionSet
-    contents (input/test_bam.py's own extraction tests cover the mapped/
-    ALT/decoy region-matching logic already), so this exercises cli.py's
-    BAM->mini-BAM->FASTQ wiring without needing a real chromosome-scale
-    reference to satisfy derive_regions' build-identification check.
-
-    `phase_tags` (DESIGN.md S10), read name -> (HP, PS), is optional and
-    defaults to no tags at all -- unphased callers (most tests in this
-    file) get exactly the same BAM as before this parameter existed.
-    """
+    """A BAM of unmapped reads only (extraction always takes "*"), with
+    optional HP/PS `phase_tags` per read name."""
     header = {"HD": {"VN": "1.6"}, "SQ": [{"SN": "chr1", "LN": 1000}]}
     bam_path = tmp_path / "source.bam"
     with pysam.AlignmentFile(str(bam_path), "wb", header=header) as bf:
@@ -271,11 +254,7 @@ def test_cli_errors_when_both_fastq_and_bam_given(tmp_path):
 
 
 def test_cli_errors_when_cram_given_without_reference(tmp_path):
-    """2026-08-29: --reference is only mandatory for a .cram --bam input
-    (CRAM cannot decode without it) -- a plain .bam needs no reference at
-    all, see test_cli_bam_path_works_without_reference below. The .cram
-    path here need not exist; the suffix check happens before any
-    existence check (cli.py's own ordering)."""
+    """--reference is required for .cram (checked before existence)."""
     cram_path = tmp_path / "source.cram"
     try:
         cli.main(["run", "sampleX", "--bam", str(cram_path), "--out-dir", str(tmp_path / "out")])
@@ -286,13 +265,7 @@ def test_cli_errors_when_cram_given_without_reference(tmp_path):
 
 
 def test_cli_bam_path_works_without_reference(tmp_path, monkeypatch):
-    """2026-08-29, real-data need: a real whole-genome ONT BAM with no
-    accompanying reference FASTA on disk. A plain .bam already carries its
-    own sequences and needs no reference to derive the region set from its
-    header or to extract regions via samtools view -- see
-    bam.extract_mini_bam()'s own docstring. Otherwise identical to
-    test_cli_bam_path_extracts_and_writes_all_outputs, just without
-    --reference."""
+    """A plain .bam runs without --reference."""
     fx = _build_fixture(tmp_path)
     with pysam.FastxFile(str(fx["fastq"])) as fq:
         reads = [(entry.name, entry.sequence) for entry in fq]
@@ -403,11 +376,7 @@ def test_update_db_rebuilds_pool_end_to_end(tmp_path):
 
 
 def test_update_db_works_without_hla_seq_dir(tmp_path):
-    """2026-08-25: --hla-seq-dir is optional -- update-db must still run to
-    completion without it (falling back to the checked-in assembly bundle
-    for any assembly_extraction gene; this fixture's HLA-TEST has none, so
-    it's IPD-only either way, but the CLI wiring itself must not require
-    the flag anymore)."""
+    """update-db runs without --hla-seq-dir."""
     dat_path, genes_yaml, _hla_seq_dir = _write_update_db_fixture(tmp_path)
     out_dir = tmp_path / "pool"
 

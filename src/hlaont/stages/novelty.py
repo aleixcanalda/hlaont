@@ -1,66 +1,24 @@
 """Stage 5 -- novelty classification (DESIGN.md S5).
 
-Classifies a Stage 4 TypingCall's consensus against its own `called_allele`
-(the nearest known IPD allele) using the exact CDS/exon/intron/UTR
-coordinates resources/templates/build.py now captures per allele
-(resources/templates/pool/ref.gene.models.jsonl.gz -- see
-resources/templates/sources.py's GeneModel). The diff itself reuses
-`called_allele_span` (stages/hla_typing.py's captured consensus-vs-
-called_allele CIGAR) through `error_model.build_aligned_strings`, the same
-alignment-expansion helper stages/consensus.py uses -- no new alignment
-step.
+Diffs the consensus against `called_allele` using Stage 4's captured CIGAR
+and locates each variant in the allele's CDS/intron/UTR (gene models from
+ref.gene.models.jsonl.gz).
 
-Mandatory taxonomy (DESIGN.md S5):
-    exact | extension | novel:intronic | novel:utr |
-    novel:synonymous | novel:nonsynonymous | novel:null
+Taxonomy: exact | extension | novel:intronic | novel:utr |
+novel:synonymous | novel:nonsynonymous | novel:null, plus
+- extension:partial: all CDS differences match an allele IPD holds only as
+  a partial (exon-subset) record (`_partial_extension_match`);
+- novel:extraction: zero variants against an assembly-extracted allele
+  whose Immuannot nearest match is itself `*new`.
 
-Plus two project-added tags. `novel:extraction` (2026-08-23, user-requested):
-scoped to assembly-extraction genes only (HLA-N/P/T/U/W/Y/R, resources/
-templates/assembly_sources.py) -- see `classify()`'s own docstring for why
-a real diff of zero variants against Immuannot's own `*new`-tagged guess
-cannot honestly be reported as plain `exact`. `extension:partial`
-(2026-09-20, user-specified gate, real HG03009/HLA-C*07:457 case): a
-CDS-level novel:* call whose entire set of CDS differences from
-called_allele exactly matches an IPD allele that IPD only ever recorded as
-a *partial* (exon-subset, e.g. exon 2-3 only) submission -- see
-`_partial_extension_match()`'s own docstring for the exact all-or-nothing
-gate (every differing position must fall inside, and exactly match, the
-partial record's own covered exon range; any leftover difference outside
-that range, or any mismatch inside it, and the call stays plain novel:*,
-same called_allele -- never a partial-credit rename).
+`extension` (invariant 7): the edited CDS exactly matches another known
+allele that IPD has only as exon-only, so it was never in the genomic pool
+(ref.gene.cds_catalogue.tsv.gz). A CDS match to a different *genomic*
+allele is not re-routed.
 
-**`extension` vs `novel` is invariant 7's named risk** ("getting this wrong
-inflates the headline number and is the mistake most likely to embarrass
-us"). `extension` means the consensus's CDS nucleotide sequence exactly
-matches some *other* already-known IPD allele that IPD only ever recorded
-as exon-only (no genomic template of its own, so it could never enter
-`called_allele`'s genomic-only candidate pool in the first place) --
-resources/templates/pool/ref.gene.cds_catalogue.tsv.gz (built from a
-require_genomic=False parse, DESIGN.md S5) is the lookup this needs.
-`extension:partial` is the same idea one step weaker: IPD's own record of
-that other allele doesn't even cover the whole CDS, only some of its
-exons, so only that fragment can honestly be confirmed as "known" -- see
-the module-level note above and `_partial_extension_match()`.
-**Scope note, not silently glossed over:** if the edited CDS instead
-exactly matches a *different genomic* allele than `called_allele`, this
-module does not re-route to that allele -- Stage 4's own candidate search
-already had that allele available and chose `called_allele` by whole-
-sequence likelihood; reconciling the two is deferred, not guessed at here.
-
-Splice-site handling is a bounded heuristic, not a splice-effect predictor:
-a variant in the first/last 2bp of an intron (the canonical GT...AG donor/
-acceptor dinucleotides) is treated as splice-disrupting and escalated to
-`novel:null`, per DESIGN.md S5's "an intronic variant at a 3' acceptor is
-the difference between a curiosity and a null allele."
-
-Naming follows Immuannot's `new`-tag convention (DESIGN.md S5): the called
-allele's fields up to the point they still agree, then literal `:new` --
-e.g. a field-4-only difference on a 4-field called_allele keeps 3 fields
-(DESIGN.md's own `HLA-A*24:02:01:new` example). This project's own
-convention, not independently re-verified against Immuannot's source (cite
-regardless, per DESIGN.md S9's provenance stance) -- a `candidate_null`
-flag stands in for the "N suffix" DESIGN.md mentions rather than guessing
-at Immuannot's exact null-suffix assignment rule.
+Variants within 2bp of an intron end (GT...AG) are treated as
+splice-disrupting -> novel:null. Names follow Immuannot's `new` tag: the
+agreeing fields, then `:new` (e.g. HLA-A*24:02:01:new).
 """
 from __future__ import annotations
 
@@ -87,30 +45,14 @@ DEFAULT_POOL_MODELS = REPO_ROOT / "resources" / "templates" / "pool" / "ref.gene
 DEFAULT_CDS_CATALOGUE = REPO_ROOT / "resources" / "templates" / "pool" / "ref.gene.cds_catalogue.tsv.gz"
 DEFAULT_POOL_META = REPO_ROOT / "resources" / "templates" / "pool" / "ref.gene.meta.tsv.gz"
 
-# Splice-site proximity window (canonical GT...AG donor/acceptor
-# dinucleotides) -- see module docstring; a bounded heuristic, not a fitted
-# or re-derived-for-ONT threshold (nothing to fit it against), so exempt
-# from invariant 11 in the same sense a structural biology convention is,
-# not a statistical one.
+# Canonical splice-site window (bp at each intron end).
 _SPLICE_SITE_WINDOW = 2
 
-# Read-support floor for a variant to count toward the novelty taxonomy
-# decision (2026-09-13, user-directed, following the 2026-09-11/12
-# consensus-QV investigation logged in development notes). stages/consensus.py's
-# per-position qv saturates at 60 regardless of real read disagreement
-# (proven on real data: a genuine 21-vs-9 dissenting vote still reports
-# qv=60 at every tested error rate), so it cannot gate novelty on its own.
-# The raw read-support fraction -- (depth-dissent)/depth, unsmoothed --
-# was checked instead against 99 real labeled calls across 7 samples
-# (`.debug/sanity_check_dissent_qv_v3.tsv`): dropping a variant below this
-# floor, then only still calling a haplotype novel if at least one variant
-# survives (OR-across-positions, not AND -- an AND-across-every-position
-# gate was tried first and found to punish real multi-variant TPs for
-# having more chances to fail), moved novelty precision 64.7% -> 80.2% at
-# a recall cost of 90.0% -> 77.0% on that dataset. Uniform across genes by
-# user's explicit choice, despite a known, accepted regression on MICA
-# specifically (4 TP -> 1 TP there) -- not re-derived/fitted per invariant
-# 11, the user's own chosen value inside the range checked.
+# Variants with read support below this fraction are ignored for the
+# taxonomy; a haplotype is novel if any variant survives. Consensus QV
+# saturates at 60 even under real dissent, so it can't gate novelty. On 99
+# labelled calls: precision 64.7% -> 80.2%, recall 90.0% -> 77.0% (MICA
+# loses 3 TPs, accepted). Provisional.
 _MIN_VARIANT_SUPPORT = 0.8
 
 
@@ -123,14 +65,8 @@ def _read_support(cv: ConsensusVariant) -> float:
 def _filter_by_read_support(
     raw_variants: list["_RawVariant"], consensus_variants: Sequence[ConsensusVariant]
 ) -> list["_RawVariant"]:
-    """Drops a raw variant below `_MIN_VARIANT_SUPPORT` read support.
-    `consensus_variants` empty (the default, and every pre-2026-09-13
-    caller) is a no-op -- exact backward compatibility for anything not
-    yet passing Stage 3's `HaplotypeConsensus.variants` through. A raw
-    variant with no matching `ConsensusVariant` (positions should always
-    line up, both built from the same consensus sequence, but this is
-    defensive) is kept rather than dropped -- "no information, not a
-    zero", the same stance `_haplotype_pileup()` already takes."""
+    """Drop variants below `_MIN_VARIANT_SUPPORT`. No-op without
+    `consensus_variants`; variants with no matching entry are kept."""
     if not consensus_variants:
         return raw_variants
     lookup = {
@@ -209,12 +145,8 @@ def load_gene_model(allele: str, models_path: Path = DEFAULT_POOL_MODELS) -> Gen
 
 
 def load_nearest_ipd_match(allele: str, pool_meta: Path = DEFAULT_POOL_META) -> str | None:
-    """Immuannot's own nearest-known-IPD-match guess for `allele`
-    (ref.gene.meta.tsv.gz's `nearest_ipd_match` column, resources/templates/
-    assembly_sources.py) -- None for every IPD-sourced allele (empty string
-    in the file) and for any allele not found at all (the ordinary case for
-    every synthetic test fixture's placeholder gene, matching this module's
-    own load_gene_model precedent of not guessing at a missing lookup)."""
+    """Immuannot's nearest IPD match for an assembly-extracted `allele`
+    (meta `nearest_ipd_match`); None otherwise."""
     with gzip.open(pool_meta, "rt") as fh:
         for row in csv.DictReader(fh, delimiter="\t"):
             if row["allele"] == allele:
@@ -223,16 +155,9 @@ def load_nearest_ipd_match(allele: str, pool_meta: Path = DEFAULT_POOL_META) -> 
 
 
 def load_gtf_template_allele(allele: str, pool_meta: Path = DEFAULT_POOL_META) -> str | None:
-    """The source hla_seq/ GTF's own gene-line `template_allele` attribute
-    for `allele` (ref.gene.meta.tsv.gz's `gtf_template_allele` column,
-    resources/templates/assembly_sources.py) -- None for every IPD-sourced
-    allele and for any allele not found, same precedent as
-    load_nearest_ipd_match. Unlike nearest_ipd_match (sourced from the same
-    GTF's transcript-line `consensus` attribute), this is never `:new`-
-    suffixed -- stages/output.py uses it purely to show a real,
-    human-readable nearest-allele name in calls.tsv's `template_allele`
-    column instead of an assembly-extracted record's content-hashed
-    accession (e.g. "HLA-W*asm3e9f0510aa")."""
+    """Source GTF `template_allele` for an assembly-extracted `allele` (meta
+    `gtf_template_allele`, never `:new`); None otherwise. Used to display a
+    real name instead of the content-hash accession."""
     with gzip.open(pool_meta, "rt") as fh:
         for row in csv.DictReader(fh, delimiter="\t"):
             if row["allele"] == allele:
@@ -243,16 +168,8 @@ def load_gtf_template_allele(allele: str, pool_meta: Path = DEFAULT_POOL_META) -
 def load_cds_catalogue_for_gene(
     gene: str, catalogue_path: Path = DEFAULT_CDS_CATALOGUE
 ) -> dict[str, list[tuple[str, bool]]]:
-    """cds_sequence -> [(allele, genomic), ...] for every non-partial IPD
-    record of `gene` (build.py's require_genomic=False pass) -- the
-    extension-detection lookup (module docstring). Rows with `partial=True`
-    (2026-09-20) are excluded here on purpose, even though harmless in
-    practice (a partial record's cds_sequence is a strict fragment of any
-    real multi-exon CDS, so it could never collide with a full `alt_cds`
-    dict lookup) -- kept out anyway so this function's behaviour is exactly
-    what it was before partial rows existed in the catalogue at all.
-    `_partial_extension_match()` reads partial rows separately, via
-    `load_partial_cds_records_for_gene()`."""
+    """cds_sequence -> [(allele, genomic), ...] for `gene`'s non-partial
+    records (the `extension` lookup)."""
     out: dict[str, list[tuple[str, bool]]] = {}
     with gzip.open(catalogue_path, "rt") as fh:
         for row in csv.DictReader(fh, delimiter="\t"):
@@ -275,14 +192,7 @@ class PartialCdsRecord:
 def load_partial_cds_records_for_gene(
     gene: str, catalogue_path: Path = DEFAULT_CDS_CATALOGUE
 ) -> list[PartialCdsRecord]:
-    """Partial-CDS IPD records for `gene` (ref.gene.cds_catalogue.tsv.gz's
-    `partial=True` rows, build.py) -- real IPD alleles whose only
-    catalogued sequence is an incomplete (exon-subset) submission, so they
-    never enter the genomic pool and can never satisfy the plain exact-
-    full-CDS `extension` lookup above either. Rows with no resolvable
-    `exon_numbers` (build.py already leaves this column empty for those,
-    see write_cds_catalogue_tsv_gz) are skipped -- `_partial_extension_match()`
-    cannot safely use a record whose own coverage isn't known."""
+    """`gene`'s partial (exon-subset) CDS records with known exon numbers."""
     out: list[PartialCdsRecord] = []
     with gzip.open(catalogue_path, "rt") as fh:
         for row in csv.DictReader(fh, delimiter="\t"):
@@ -300,13 +210,8 @@ def load_partial_cds_records_for_gene(
 
 
 def _cds_exon_numbers(gm: GeneModelLite) -> list[int] | None:
-    """The IMGT `/number` for each of gm.cds_exons's segments, in order,
-    resolved by containment against gm.exons's own numbered FT ranges. None
-    if any segment can't be resolved. Deliberately duplicated from
-    resources/templates/sources.py's cds_exon_numbers() (same shape, same
-    logic) rather than imported -- this module already keeps its own
-    GeneModelLite rather than importing sources.py's GeneModel, same
-    precedent."""
+    """IMGT exon number of each CDS segment, or None if any is unresolved.
+    Duplicates sources.cds_exon_numbers()."""
     numbers: list[int] = []
     for cs, ce in gm.cds_exons:
         match = None
@@ -328,24 +233,9 @@ def _partial_extension_match(
     cds_variants: Sequence[NoveltyVariant],
     partial_records: Sequence[PartialCdsRecord],
 ) -> PartialCdsRecord | None:
-    """First partial_records entry whose own covered exon numbers (a)
-    contain every cds_variants position and (b) reproduce that exact
-    covered range's edited sequence, byte for byte -- both required. (a)
-    alone is not enough: a partial record could cover some of the varying
-    positions without covering all of them, which would silently ignore a
-    real difference outside its own coverage. (b) alone is not enough
-    either: it would let a short fragment match by coincidence against an
-    arbitrary substring rather than the specific exon range it actually
-    claims to cover. This is the user-specified gate, precisely: "zero
-    mismatch, complete match [over the partial's own covered fields], or
-    leave the novel call and same template" -- there is no partial-credit
-    return value, only a full match or None.
-
-    None if this called_allele's own exon numbering can't be resolved
-    (_cds_exon_numbers() returns None) or no partial record satisfies both
-    conditions -- the existing exact-full-CDS `extension` tier and plain
-    novel:* taxonomy are both unaffected either way; this is purely
-    additive."""
+    """First partial record whose covered exons (a) contain every CDS
+    variant position and (b) match the edited sequence over that range
+    exactly. Both are required; there is no partial credit. None otherwise."""
     segment_exon_numbers = _cds_exon_numbers(gm)
     if segment_exon_numbers is None:
         return None
@@ -400,10 +290,8 @@ class _RawVariant:
 def _diff_against_reference(
     ref_seq: str, consensus_seq: str, span: AlignmentSpan
 ) -> list[_RawVariant]:
-    """Diff consensus_seq against ref_seq using the already-captured CIGAR
-    (span), in ref_seq's own 1-based coordinates -- no per-read voting
-    needed (unlike stages/consensus.py's multi-read pileup): there is only
-    one sequence being compared, the already-polished consensus."""
+    """Diff consensus_seq against ref_seq via the captured CIGAR, in ref_seq's
+    1-based coordinates."""
     aligned_ref, aligned_consensus = build_aligned_strings(
         ref_seq, consensus_seq,
         ref_start=span.ref_start, ref_end=span.ref_end,
@@ -433,21 +321,10 @@ def _diff_against_reference(
 
 def _edited_cds(ref_seq: str, consensus_seq: str, span: AlignmentSpan, gm: GeneModelLite,
                  ranges: Sequence[tuple[int, int]] | None = None) -> str:
-    """Reconstruct the consensus's own CDS nucleotide sequence by walking
-    the same gapped alignment _diff_against_reference() uses, keeping only
-    consensus bases anchored at (or, for an insertion, immediately after) a
-    ref_seq position inside `ranges` (default gm.cds_exons) -- an insertion
-    is attributed to the CDS iff the ref position it sits after is itself
-    in the CDS (module docstring: a simple, documented convention for the
-    exon/intron boundary case, not a splice-aware placement).
-
-    `ranges` (2026-09-20): `_partial_extension_match()` calls this a second
-    time with a *subset* of gm.cds_exons (just the segments a partial IPD
-    record's own coverage corresponds to) to reconstruct only that portion
-    of the edited CDS -- indel-safe (unlike slicing the already-built full
-    alt_cds by a precomputed reference-length offset, which would drift at
-    any indel inside the covered range), by construction, since it reuses
-    this same alignment walk rather than doing post-hoc arithmetic on it."""
+    """Edited CDS of the consensus: consensus bases at ref positions inside
+    `ranges` (default gm.cds_exons); an insertion counts if the ref base it
+    follows is inside. Passing a subset of exons gives an indel-safe
+    partial CDS."""
     if ranges is None:
         ranges = gm.cds_exons
     aligned_ref, aligned_consensus = build_aligned_strings(
@@ -495,10 +372,8 @@ def _translate(cds: str, codon_start: int) -> str:
 
 
 def _coding_effect(ref_protein: str, alt_protein: str, ref_cds_len: int, alt_cds_len: int) -> str:
-    """_translate() stops at the first in-frame stop codon it finds, so a
-    stop in its output is always the *last* character -- there is no
-    "stop buried mid-string" case to check for. Compares stop *position*
-    (present/absent, and how early) between ref and alt instead."""
+    """Compare stop positions (_translate() stops at the first stop codon,
+    so a stop is always last)."""
     if (alt_cds_len - ref_cds_len) % 3 != 0:
         return "frameshift"
     ref_has_stop = ref_protein.endswith("*")
@@ -506,10 +381,7 @@ def _coding_effect(ref_protein: str, alt_protein: str, ref_cds_len: int, alt_cds
     if alt_has_stop and ref_has_stop and len(alt_protein) < len(ref_protein):
         return "premature_stop"
     if alt_has_stop != ref_has_stop:
-        # A stop gained where the reference had none, or lost entirely --
-        # both a disrupted reading-frame termination. DESIGN.md S5 has one
-        # `novel:null` bucket for "frameshift / PTC / splice-disrupting",
-        # not finer subtypes, so both collapse to the same label here.
+        # Stop gained or lost: both novel:null.
         return "premature_stop"
     if alt_protein != ref_protein:
         return "nonsynonymous"
@@ -523,9 +395,7 @@ def _novel_name(display_allele: str, n_known_fields: int) -> str:
     if not prefix:
         return f"{gene}*new"
     if prefix[-1] == "new":
-        # display_allele is already an Immuannot `*new`-tagged guess
-        # (assembly-derived genes, module docstring) -- appending a second
-        # `:new` would read as "HLA-P*new:new", not a real convention.
+        # Already a `*new` name; don't append another `:new`.
         return f"{gene}*{':'.join(prefix)}"
     return f"{gene}*{':'.join(prefix)}:new"
 
@@ -544,36 +414,15 @@ def classify(
     models_path: Path = DEFAULT_POOL_MODELS,
     cds_catalogue_path: Path = DEFAULT_CDS_CATALOGUE,
 ) -> NoveltyCall:
-    """Stage 5 entry point. `consensus_sequence` is the same
-    HaplotypeConsensus.sequence Stage 4 typed (call.called_allele_span was
-    computed against it).
+    """Stage 5 entry point. `consensus_sequence` is what Stage 4 typed.
 
-    `consensus_variants` (optional): the same HaplotypeConsensus.variants
-    Stage 3 built alongside `consensus_sequence`, used only to apply
-    `_MIN_VARIANT_SUPPORT`'s read-support filter (see that constant's own
-    comment) before a raw diff position counts toward the taxonomy
-    decision below. Omitting it (the default) reproduces this function's
-    pre-2026-09-13 behaviour exactly.
+    `consensus_variants`: Stage 3 variants, used for the read-support filter
+    (omit to skip it).
 
-    **`display_allele` (2026-08-23, user-requested):** for assembly-
-    extraction genes (HLA-N/P/T/U/W/Y/R, resources/templates/
-    assembly_sources.py), `call.called_allele` is a content-hash accession
-    (`HLA-N*asm<sha256>`) -- a real, stable identity, but not a name that
-    looks like every other gene's output. `ref.gene.meta.tsv.gz`'s
-    `nearest_ipd_match` column (Immuannot's own nearest-known-IPD-match
-    guess for this exact sequence) is used for *display* only when present
-    -- `taxonomy`/`variants` still come from a real diff against
-    `called_allele`'s own sequence, never assumed correct just because a
-    friendlier name is shown (the guess is not treated as authoritative,
-    same stance assembly_sources.py's own docstring takes). If Immuannot's
-    own guess is itself `*new`-tagged (no real IPD catalog hit at all), a
-    zero-variant diff against our own extracted reference cannot honestly
-    be reported as `exact` -- that would claim a catalogued match that
-    doesn't exist -- so it gets the dedicated `novel:extraction` taxonomy
-    instead (this project's own addition to DESIGN.md S5's six mandatory
-    tags, scoped to exactly this case). Ordinary IPD-sourced genes have no
-    `nearest_ipd_match` at all (empty column), so `display_allele` is just
-    `called_allele` and every existing code path/output is unchanged.
+    For assembly-extracted genes the displayed name is Immuannot's
+    `nearest_ipd_match`; the diff is still against `called_allele`. If that
+    match is itself `*new`, zero variants gives `novel:extraction`, not
+    `exact`.
     """
     ref_seq = load_allele_sequences(pool_fasta, (call.called_allele,))[call.called_allele]
     gm = load_gene_model(call.called_allele, models_path)
@@ -628,18 +477,8 @@ def classify(
                 extension_allele=extension_allele, coding_effect=effect, variants=variants,
             )
 
-        # Partial-CDS extension (2026-09-20, real HG03009/HLA-C*07:457 case,
-        # user-specified gate): a CDS-level novel:* call (fields 1-3 -- this
-        # branch is already scoped to cds_variants, so novel:intronic/utr
-        # calls below never reach here) whose *entire* set of CDS
-        # differences from called_allele falls inside, and exactly matches,
-        # some IPD allele that only exists as a partial (exon-subset)
-        # record. Fields beyond what that partial record itself specifies
-        # stay `:new` -- this never claims more than the partial record
-        # actually confirms. Any leftover difference outside the partial's
-        # own coverage, or any mismatch within it, and this returns None --
-        # falls straight through to the ordinary novel:* taxonomy below,
-        # unchanged, same called_allele.
+        # Partial-CDS extension: every CDS difference must fall inside and
+        # exactly match a partial record; else plain novel:*.
         partial_records = load_partial_cds_records_for_gene(call.gene, cds_catalogue_path)
         if partial_records:
             partial_match = _partial_extension_match(
@@ -666,9 +505,7 @@ def classify(
                 proposed_name=_novel_name(display_allele, 1), candidate_null=False,
                 extension_allele=None, coding_effect=effect, variants=variants,
             )
-        # Synonymous CDS change -- fall through to also check intron/UTR
-        # variants below, but a coding (field-3) difference already sets
-        # the floor for how many fields can be reported "known".
+        # Synonymous: still check intron/UTR below, but at most 2 fields agree.
         n_fields_agree = min(2, n_fields)
         if any(v.splice_site for v in variants if v.location == "intron"):
             return NoveltyCall(

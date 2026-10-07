@@ -1,112 +1,27 @@
-"""C4A/C4B copy number via a real external control region (DESIGN.md S2f),
-added 2026-08-31/09-01 session, user-directed.
+"""C4A/C4B copy number against an external control region (DESIGN.md S2f).
 
-**Why this exists alongside `c4_cn.py`'s own, older total-CN mechanism,
-not instead of it (yet):** `c4_cn.py`'s calibrator-panel-normalised total
-undershot real truth badly in at least one real sample (HG00253: 2.00
-against a true 4) -- a long, real-data-driven investigation this session
-(the development notes' own session log has the full derivation, do not re-derive it
-here) traced this to the calibrator panel itself being a noisy, HLA-gene-
-based baseline, not a fundamentally different question. The user's own
-fix: normalise against a real, external, structurally boring control
-region instead -- locityper's own published segdup-free background
-interval, chr17:72,950,001-77,450,000 (CHM13v2.0) -- using real per-base
-`samtools depth` coverage (module docstring below) for both the control
-and C4 itself.
+Normalises against the segdup-free chr17:72,950,001-77,450,000 interval
+(CHM13v2.0, from locityper) rather than an HLA calibrator panel, which
+undershot (HG00253: 2.00 vs truth 4). The control and the four C4 forms
+(AL/AS/BL/BS, each with +-3kb flanks; +-6kb recruited off-target reads)
+ship as references built by resources/controls/build.py, so any FASTQ can
+be aligned against them; no BAM or Stage 0 sieve is involved (control reads
+never pass it). The four forms are aligned in one pass so primary
+alignments split reads between them. Per-form depth is samtools depth on
+the sorted BAM (align_depth.py). No coverage pre-filter: one hurt C4
+recruitment.
 
-**Deliberately reference-shipped, not BAM-derived at runtime.** Early
-versions of this investigation pulled the control region's reads straight
-from a sample's own BAM via `samtools depth` -- accurate, but BAM-only,
-breaking the FASTQ-only critical path this project has prioritised since
-DESIGN.md's own Status section. The fix, user-directed: `resources/controls/
-build.py` extracts the real chr17 interval AND C4's own real genomic
-sequence (both forms, both genes, each with real +-3kb flanking sequence)
-*once*, from a real CHM13v2.0 reference, and ships them as ordinary
-resource files (`chr17_control.chm13v2.fa.gz`, `c4_flanked_forms.chm13v2.
-fa.gz`) -- exactly the same shape as `resources/anchors/anchors.fa.gz`.
-A sample's own reads get aligned against these shipped references with a
-plain minimap2 call, same as Stage 0 already does against the anchor set;
-no BAM, no external reference, no per-sample coordinate lookup needed at
-runtime. This is why this module takes a FASTQ path, not a `CandidateRead`
-list or a `GeneAssignmentMatrix` -- it does its own alignment pass,
-independent of Stage 0's gene-anchor sieve (a read that only overlaps the
-chr17 control region would never pass that sieve at all, since it has
-nothing to do with any HLA/C4 anchor).
-
-**Four forms, one combined alignment, real HG00253 validation (this
-session's own investigation, not re-derived here):** C4A and C4B share
-most of their sequence with their own long/short form and with each
-other, so aligning against a single combined reference (not four separate
-per-form runs) is what lets minimap2's own primary-alignment resolution
-correctly split a read across the four competing targets instead of
-double-crediting it. Real HG00253 result (`+-3kb` flanks, the validated
-choice -- `+-6kb` was tried and rejected, see `resources/controls/
-build.py`'s own docstring), from the original PAF-based measurement this
-module used through the first 2026-09-01 revision (module docstring
-below has the real bug that motivated moving off it -- the *shape* of
-this finding, not the exact numbers, is what still applies): C4AL depth
-18.21 (truth: 2 real copies), C4BL 15.29 (truth: 1), C4A-short 5.04
-(truth: 0), C4B-short 12.00 (truth: 1) against a control depth of 33.41 --
-the *relative* pattern across forms was qualitatively right (C4A-long >>
-C4A-short, C4B-long ~= C4B-short) even though the *total* still undershot
-truth by ~25%, consistent with a real but not-yet-root-caused uniform
-recruitment shortfall, not a form-specific error. Flagged, not hidden
-(invariant 11): not yet re-validated against real data under the
-samtools-depth revision below.
-
-**Revised 2026-09-01, same session, user-directed: real `samtools depth`
-on a real BAM, not a PAF-derived aligned-bases sum.** The original version
-of this module (written, per the development notes' own handoff note, without ever
-actually being run) shelled out to `minimap2 -ax map-ont ... -c` and
-parsed PAF -- a real bug, caught the moment this module was first actually
-executed (test_cli.py's own end-to-end CLI test, which exercises the
-sibling `stages/chr17_control.py` module this one calls into): `-a` forces
-SAM output and minimap2 silently ignores `-c` (documented as PAF-only)
-once `-a` is set, so every "PAF" line was really a SAM line. Rather than
-just fixing the flag to get real PAF back, the user redirected to the
-more reliable method this project's own C4 investigation already found
-(the development notes: "the single most reliable number produced all
-session") -- real `samtools depth` over a real, sorted+indexed BAM
-(`stages/align_depth.py`) -- and extended it to be the shared method for
-chr17 (`stages/chr17_control.py`), C4 (this module), and the classical-
-gene CN numerator (`stages/cn.py`) alike. `n_reads`/`depth` per form now
-come from real `samtools depth`/distinct-read-name counts over the body
-span of a real, sorted BAM (built once against the combined four-form
-reference), not PAF-line overlap arithmetic -- same semantics, more
-reliable measurement.
-
-**Coverage pre-filter: none, by design (`min_target_coverage=0.0`).** A
-version added the same revision this module first shipped with mirrored
-Stage 0's own `min_anchor_coverage` (0.1) here -- reverted 2026-09-01,
-same day, user-directed: this project's own real C4 investigation
-(module docstring above) already found a coverage bar actively harmful
-for C4 recruitment specifically, so re-applying one here contradicted a
-lesson this module's own docstring already records. `0.0` makes
-`filter_bam_by_target_coverage()`'s `< min_target_coverage` check never
-fire, i.e. every mapped read is kept regardless of how little of its own
-flanked-form contig it covers.
-
-**Revised 2026-09-25, user-directed: count-based total, joint integer
-call.** Real benchmark finding (hlaont_bench/c4_cn_improve_20260925/, 26
-runs, 13 samples x 15x/30x, Immuannot truth): the depth-based total above
-over-reads by ~10% (est/truth 1.105), and its per-form rounding got all four
-forms right in 14/26 runs. Now:
-- *Total CN* = distinct reads overlapping the 5' window shared by all four
-  forms (gene-body start -> HERV breakpoint), divided by the reads expected
-  per copy from the chr17 control's own read count and mean read length
-  (`control_n_reads`, `control_depth`). Unbiased on the benchmark (1.012) with
-  no calibration constant. The 3' window was tighter but biased +21% for an
-  unexplained reason, so it is not used.
-- *Per-form `cn_estimate`* = that total times the form's share of the summed
-  per-form depth, so depth only sets proportions, never the total. The old
-  depth-based values stay on `depth_cn_estimate`/`depth_total_cn_estimate`.
-- *HERV-spanning reads*: reads spanning the whole long-form HERV vs the
-  short-form breakpoint, with read-length exposure, as long/short evidence.
-- `call_c4_forms_jointly()`: integer AL/AS/BL/BS call (17/26 all-four-correct
-  vs 14/26) from those signals plus Phase 2's A/B vote counts, exact over all
-  non-negative integers (no copy-number cap), with a GQ.
-Falls back to the depth-based numbers, and no joint call, when
-`control_n_reads` is 0 (a caller that passed `control_depth` alone).
+- Total CN = distinct reads over the 5' window shared by all forms
+  (gene-body start -> HERV breakpoint) / reads expected per copy from the
+  control's read count and mean read length. Unbiased on 26 benchmark runs
+  (est/truth 1.012 vs 1.105 for depth); the 3' window was biased +21%.
+- Per-form `cn_estimate` = total x the form's share of summed depth. The
+  depth-based values remain as `depth_cn_estimate`/`depth_total_cn_estimate`.
+- HERV-spanning reads (long vs short breakpoint, exposure-weighted) are
+  long/short evidence.
+- `call_c4_forms_jointly()`: integer AL/AS/BL/BS call with GQ (17/26 runs
+  all-forms-correct vs 14/26 for rounding).
+Without `control_n_reads` falls back to depth-based numbers and no joint call.
 """
 from __future__ import annotations
 
@@ -130,11 +45,8 @@ FORMS = ("C4AL", "C4AS", "C4BL", "C4BS")
 
 FLANK_BP = 3_000
 
-# gene-body length per form (total sequence length minus the two 3kb
-# flanks) -- must match resources/controls/build.py's own real output
-# exactly; not re-derived from the FASTA at runtime since these are fixed,
-# versioned resources, same convention as assign.py's own DEFAULT_POOL_*
-# constants not being re-measured on every call.
+# Gene-body length per form (contig minus 2 x 3kb flanks); must match
+# resources/controls/build.py.
 _GENE_BODY_LENGTH = {
     "C4AL": 20_624,
     "C4BL": 20_624,
@@ -142,17 +54,7 @@ _GENE_BODY_LENGTH = {
     "C4BS": 14_258,
 }
 
-# 2026-09-01, user-directed: no coverage pre-filter for C4 at all (0.0 --
-# `filter_bam_by_target_coverage()`'s own `< min_target_coverage` check
-# never fires at 0.0, so every mapped read passes). Deliberately NOT
-# mirroring Stage 0's own `min_anchor_coverage` (0.1) the way this used to
-# -- last session's own real HG00253 investigation (module docstring
-# above) already found a coverage bar actively harmful for C4 recruitment
-# specifically (real data: lifting Stage 0's sieve bar entirely, before
-# the flanking fix even existed, nearly doubled real recruited reads with
-# no corresponding drop in signal quality) -- so this module keeps that
-# lesson rather than re-applying a bar the C4 investigation itself showed
-# doesn't belong here.
+# No coverage pre-filter for C4 (0.0 keeps every mapped read).
 _DEFAULT_MIN_TARGET_COVERAGE = 0.0
 
 
@@ -217,11 +119,10 @@ def _contig(form: str) -> str:
 
 
 def _read_signals(bam_path: Path, params: C4JointCallParams) -> tuple[int, dict[str, float]]:
-    """Distinct reads over the 5' window shared by all four forms (gene-body
-    start -> HERV breakpoint, same coordinates on every contig), and HERV-
-    spanning primary alignments with their read-length exposure: a read of
-    length l can span a window w from max(0, l - w) start positions, so
-    long-form spans are rarer and must be weighted, not counted raw."""
+    """Distinct reads over the shared 5' window, and HERV-spanning primary
+    alignments with read-length exposure (a read of length l can span a
+    window w from max(0, l - w) start positions, so long-form spans must be
+    weighted)."""
     w_long = params.herv_end - params.herv_start + 2 * params.herv_anchor_bp
     w_short = 2 * params.herv_anchor_bp
     left = params.herv_start - params.herv_anchor_bp
@@ -259,26 +160,9 @@ def estimate_c4_cn_via_chr17_control(
     minimap2_bin: str = "minimap2",
     samtools_bin: str = "samtools",
 ) -> C4Chr17ControlResult:
-    """Real samtools-depth-based C4 copy number (module docstring). Two
-    independent alignment passes over the same `fastq_path` -- one against
-    the shipped chr17 control region (`chr17_control.
-    compute_chr17_control_depth()`), one against the shipped four-form C4
-    reference -- neither reuses Stage 0's gene-anchor sieve (a read
-    supporting the chr17 control has nothing to do with any HLA/C4 anchor
-    and would never pass that sieve; C4 has no Stage 0 anchor at all, so
-    there is no sieve output to reuse the way `stages/cn.py`'s classical-
-    gene depth now does). `min_target_coverage` defaults to
-    `_DEFAULT_MIN_TARGET_COVERAGE` (0.0, module docstring) -- pass an
-    explicit float to override for a specific investigation.
-
-    `control_depth`/`control_n_reads`, added 2026-09-01 once
-    `stages/pipeline.py` started calling this alongside `stages/cn.py`'s
-    own classical-gene CN in the same sample run: if `control_depth` is
-    given (not `None`), it's used directly instead of this function
-    computing its own separate chr17-control alignment pass -- avoids a
-    redundant whole-FASTQ minimap2 run when the caller already has one.
-    Standalone/test callers that don't pass it get this function's
-    original, fully self-contained behaviour."""
+    """C4 per-form CN from `fastq_path` (see module docstring). Aligns
+    against the C4 forms and, unless `control_depth` is given, against the
+    chr17 control."""
     if control_depth is None:
         control_depth, control_n_reads = compute_chr17_control_depth(
             fastq_path, chr17_control_fasta=chr17_control_fasta,
@@ -310,9 +194,8 @@ def estimate_c4_cn_via_chr17_control(
         n_5p, herv = _read_signals(filtered_bam, params)
 
     depth_total = sum(cn for _, _, cn in per_form.values() if cn is not None) if control_depth > 0 else None
-    # Count-based total (module docstring, 2026-09-25): reads expected per
-    # copy over a window of length b = N_ctrl * (b + mean_len) / (L_ctrl +
-    # mean_len) / 2, mean_len being the control's own mean read length.
+    # Reads expected per copy over a window of length b:
+    # N_ctrl * (b + mean_len) / (L_ctrl + mean_len) / 2.
     reads_per_copy = None
     if control_depth > 0 and control_n_reads > 0:
         mean_len = control_depth * CHR17_CONTROL_LENGTH / control_n_reads

@@ -1,52 +1,14 @@
-"""`@SQ` header introspection -- MHC region-set derivation (DESIGN.md S3.1).
+"""`@SQ` header introspection -> extraction region set (DESIGN.md S3.1).
 
-The tool derives its own extraction region set from a BAM/CRAM header
-instead of asking the user which genome build/decoy set they have
-(invariant 2). Given a header's contig names/lengths, this module identifies
-which known primary-assembly build the header belongs to (by contig name AND
-length together -- see DEFAULT_BUILDS) and returns the union of:
-
-  - The MHC window on that build's primary assembly (resources/regions/
-    mhc_window.<build>.bed), matched to whichever contig naming convention
-    is actually present in the header.
-  - Any of that build's known MHC ALT contigs present (resources/regions/
-    alt_contigs.<build>.yaml). GRCh38 has 7; CHM13v2.0 has none at all (a
-    real structural difference -- it is a single-haplotype T2T assembly,
-    not a gap in this code).
-  - Any HLA decoy contigs present, detected by name pattern (~525 in the
-    1000G/UKB-style GRCh38 decoy reference, not enumerated -- see the
-    GRCh38 YAML's header comment for why; the same pattern is checked
-    regardless of which build matched, since decoy-contig presence depends
-    on the exact reference FASTA used, not the primary-assembly build).
-  - **Added 2026-09-01, user-directed:** the chr17 control region
-    `stages/chr17_control.py`/`stages/c4_chr17_cn.py` normalise CN against
-    (locityper's own published segdup-free background interval), one per
-    build, user-supplied coordinates: CHM13v2.0 chr17:72,950,001-77,450,000
-    (1-based -- the identical real interval `resources/controls/build.py`
-    extracted the shipped `chr17_control.chm13v2.fa.gz` resource from) and
-    GRCh38 chr17:72,062,001-76,562,000 (1-based). Both are alignment
-    *targets*, not coordinate systems, for the mechanism that reads this
-    region: `stages/chr17_control.py`'s own alignment pass takes real raw
-    read sequence and realigns it against the shipped, CHM13-derived
-    `chr17_control.chm13v2.fa.gz` reference regardless of which build the
-    input BAM was originally aligned to -- so a GRCh38-aligned `--bam`
-    sample only needs its own chr17 reads *extracted* using GRCh38's own
-    real coordinates here; the control measurement itself is build-
-    independent. Without this region, a `--bam`-derived FASTQ (whose
-    mini-BAM extraction previously only pulled the MHC window +
-    ALT/decoy/unmapped reads) never carried any chr17 signal at all,
-    silently forcing every gene's CN to the loud-None "no control signal"
-    path (`stages/cn.py`'s own invariant-4 guard) for every `--bam` user --
-    a real, previously undiagnosed gap this closes. Matched by name only
-    (not name+length like the MHC window's own primary contig, invariant
-    2's usual convention) -- user-supplied coordinates, not independently
-    re-derived against a real reference's own `.fai` this session.
-
-Scope boundary: this derives *which regions to extract*, nothing more.
-Turning a RegionSet into an actual mini-BAM (Stage 0), handling unmapped
-reads whose mate maps into one of these regions, and the S3.3 minimizer
-sweep over fully-unmapped reads are separate, not-yet-built pieces that
-consume this module's output -- not built here.
+Identifies the build by primary contig name and length (invariant 2: never
+ask the user) and returns:
+- the MHC window (resources/regions/mhc_window.<build>.bed), in the
+  header's naming convention;
+- the build's MHC ALT contigs present (GRCh38: 7; CHM13v2.0: none);
+- HLA decoy contigs present, by name pattern;
+- the chr17 control region (CHM13v2.0 chr17:72,950,001-77,450,000; GRCh38
+  chr17:72,062,001-76,562,000), so --bam input carries control reads.
+  Matched by name only.
 """
 from __future__ import annotations
 
@@ -75,16 +37,11 @@ class BuildConfig:
     chr17_control_region: tuple[str, int, int] | None = None
 
 
-# User-supplied real coordinates, 2026-09-01 (1-based -> converted to
-# 0-based half-open here): CHM13v2.0 chr17:72,950,001-77,450,000, GRCh38
-# chr17:72,062,001-76,562,000 -- module docstring has the full rationale.
+# chr17 control, 0-based half-open.
 _CHM13V2_CHR17_CONTROL = ("chr17", 72_950_000, 77_450_000)
 _GRCH38_CHR17_CONTROL = ("chr17", 72_062_000, 76_562_000)
 
-# Tried in order; the first build whose primary contig is identified in a
-# given header wins (see derive_regions). Order has no effect on correctness
-# since a header can only match one build's primary contig (name+length
-# together), but is fixed for determinism (invariant 9).
+# Tried in order; a header matches at most one build (name + length).
 DEFAULT_BUILDS: tuple[BuildConfig, ...] = (
     BuildConfig(
         name="GRCh38",
@@ -138,15 +95,9 @@ def derive_regions(
     *,
     builds: tuple[BuildConfig, ...] = DEFAULT_BUILDS,
 ) -> RegionSet:
-    """Derive the MHC extraction region set from a header's {contig: length}.
-
-    Raises ValueError if no known build's primary contig can be identified
-    in sq_lengths at all (invariant 2: an unrecognized build is a loud
-    error, never a silent empty region). It is NOT an error for a matched
-    build to contribute zero ALT contigs or zero HLA decoys -- DESIGN.md
-    S3.1: "if they exist" -- most references will lack one or both, and
-    CHM13v2.0 never has ALT contigs at all.
-    """
+    """Region set from a header's {contig: length}. Raises ValueError if no
+    known build's primary contig is found (invariant 2). Zero ALTs or decoys
+    is fine."""
     tried: list[str] = []
     for build in builds:
         meta = _load_alt_contigs(build.alt_contigs_path)

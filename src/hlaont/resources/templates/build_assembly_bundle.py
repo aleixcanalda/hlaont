@@ -1,19 +1,7 @@
 #!/usr/bin/env python3
-"""Extract HLA-N/P/T/U/W/Y/R templates from a real hla_seq/ directory
-(AssemblyGTFSource) and write them as a small, standalone bundle
-(assembly_bundle/bundle.{fa,meta.tsv,models.jsonl}.gz) that build.py can
-use by default -- without every user needing the ~3.6GB real hla_seq/
-phased-assembly directory on disk just to get these seven genes.
-
-The bundle is small because AssemblyGTFSource already dedups to distinct
-sequences: the real 2025-03 snapshot (232 samples / 461 haplotypes) yields
-~190 records / ~450KB across the six genes hla_seq/ actually annotates
-(HLA-R has zero real records in this snapshot, same as build.py's own
-per-gene reporting already shows).
-
-Run this only to regenerate the checked-in bundle (a newer/larger hla_seq/
-snapshot, or a genes.yaml assembly_extraction change) -- ordinary use of
-build.py / cli.py update-db reads the bundle, it does not regenerate it.
+"""Extract HLA-N/P/T/U/W/Y/R templates from hla_seq/ (AssemblyGTFSource)
+into the checked-in bundle assembly_bundle/bundle.{fa,meta.tsv,models.jsonl}.gz
+used by build.py by default. Run only to regenerate the bundle.
 
     python build_assembly_bundle.py --hla-seq-dir /path/to/hla_seq
 """

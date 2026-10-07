@@ -1,19 +1,10 @@
 #!/usr/bin/env python3
-"""Build the versioned HLA template pool (DESIGN.md S2d).
+"""Build the versioned HLA template pool (DESIGN.md S2d) from IPD-IMGT/HLA
+plus assembly-derived templates.
 
-Multi-source by design: today this wires up IPD-IMGT/HLA only. Immuannot
-HPRC/CPC assemblies and MHC ALT haplotypes are added later as additional
-TemplateSource instances in `sources`, below — not a refactor.
-
-The pool is restricted to "genomic" records: both UTRs plus at least one
-intron present (DESIGN.md S2b), matching ipd_audit.py's definition. This is
-stricter than FuFiHLA's `grep -v partial`, which keeps exon-only records that
-cannot template-and-polish a full gene.
-
-The gene list comes from resources/genes.yaml (development notes invariant 5) — never
-hardcode a gene list here. A gene qualifies for the IPD template pool if it is
-not `excluded` and its `typing_module` is not `structural` (C4A/C4B route
-through DESIGN.md S2f instead, not the IPD star-allele pool).
+Only "genomic" IPD records (both UTRs and >= 1 intron, DESIGN.md S2b) enter
+the pool. Genes come from resources/genes.yaml: not excluded and not
+`typing_module: structural` (C4).
 """
 from __future__ import annotations
 
@@ -40,20 +31,10 @@ from sources import (  # noqa: E402
     cds_nucleotide_sequence,
 )
 
-POOL_SCHEMA_VERSION = 6  # 6: ref.gene.cds_catalogue.tsv.gz gained partial + exon_numbers
-                          # columns, and now includes /partial IPD records too (2026-09-20,
-                          # HG03009/HLA-C*07:457) -- stages/novelty.py's partial-CDS
-                          # extension-matching gate (DESIGN.md S5).
-                          # 5: ref.gene.meta.tsv.gz gained gtf_template_allele (2026-09-03,
-                          # user-requested: calls.tsv's template_allele column showed a raw
-                          # content-hash accession, e.g. "HLA-W*asm3e9f0510aa", for the
-                          # assembly-extracted genes -- this is the source hla_seq/ GTF's own
-                          # gene-line template_allele attribute instead, e.g.
-                          # "HLA-W*01:01:01:05") -- empty string for every IPD-sourced record.
-                          # 4: gained nearest_ipd_match (assembly-derived genes' display naming,
-                          # stages/novelty.py) -- empty string for every IPD-sourced record.
-                          # 3: added ref.gene.cds_catalogue.tsv.gz (DESIGN.md S5 "extension"
-                          # detection)
+# Schema history: 6 cds_catalogue gained partial + exon_numbers (and partial
+# records); 5 meta gained gtf_template_allele; 4 meta gained
+# nearest_ipd_match; 3 added ref.gene.cds_catalogue.tsv.gz.
+POOL_SCHEMA_VERSION = 6
 
 
 def load_target_genes(genes_yaml: Path) -> tuple[set[str], dict[str, int]]:
@@ -73,11 +54,7 @@ def load_target_genes(genes_yaml: Path) -> tuple[set[str], dict[str, int]]:
 
 
 def load_assembly_extraction_genes(genes_yaml: Path) -> set[str]:
-    """Genes with genes.yaml's `assembly_extraction: gtf_coordinate` field
-    set (2026-08-22) -- read by build.py to route them through
-    AssemblyGTFSource (real per-haplotype sequences extracted from
-    hla_seq/'s GTF coordinates), never branched on by gene name in code
-    (invariant 5)."""
+    """Genes with genes.yaml `assembly_extraction: gtf_coordinate`."""
     manifest = yaml.safe_load(genes_yaml.read_text())
     return {g["gene"] for g in manifest["genes"] if g.get("assembly_extraction") == "gtf_coordinate"}
 
@@ -113,16 +90,8 @@ def write_meta_tsv_gz(path: Path, records: list[TemplateRecord]) -> None:
 
 
 def write_gene_models_jsonl_gz(path: Path, records: list[TemplateRecord]) -> None:
-    """One JSON object per allele, keyed by ipd_id (stable across nomenclature
-    renames, unlike `allele`) -- DESIGN.md S5's novelty classifier needs the
-    exact CDS/exon/intron/UTR coordinates of whichever template an allele was
-    selected against (stages/genotype.py), not just genomic/non-genomic.
-    Coordinates are 1-based inclusive, in this record's own sequence
-    numbering (sources.py's GeneModel docstring) -- the same numbering
-    ref.gene.fa.gz's sequence is in, so no coordinate translation is needed
-    downstream. Records with no gene_model (should not occur for a genomic
-    record, see build.py's own validation pass) are skipped, not written as
-    a null placeholder -- absence is the loud signal, not a written-out None."""
+    """One JSON object per allele with a gene model, keyed by ipd_id;
+    coordinates 1-based inclusive in ref.gene.fa.gz numbering."""
     with open(path, "wb") as raw:
         with gzip.GzipFile(fileobj=raw, mode="wb", mtime=0) as gz:
             for r in records:
@@ -144,29 +113,10 @@ def write_gene_models_jsonl_gz(path: Path, records: list[TemplateRecord]) -> Non
 
 
 def write_cds_catalogue_tsv_gz(path: Path, records: list[TemplateRecord]) -> None:
-    """Every allele's CDS nucleotide sequence, genomic or not, partial or
-    not -- DESIGN.md S5's `extension` class ("CDS matches a known allele;
-    IPD holds no full-length record. Not a novel allele.") needs to check a
-    consensus's CDS against alleles IPD only ever recorded as exon-only,
-    which never enter resources/templates/pool/ref.gene.fa.gz's genomic-only
-    pool (invariant 7: getting `extension` vs `novel` wrong "is the mistake
-    most likely to embarrass us"). Records with no parseable CDS (e.g. a
-    pseudogene record with a disrupted/unannotated ORF) are skipped, not
-    written with an empty sequence -- absence from the catalogue, not a
-    false empty match, same "loud, not silent" stance as elsewhere here.
-
-    `partial` rows (2026-09-20, real HG03009/HLA-C*07:457 case: a genuine
-    IPD allele whose only submission is a truncated, exon-2/3-only CDS --
-    never a genomic record, and never a complete-CDS one either, so the
-    plain exact-full-CDS extension lookup above can never see it) exist
-    purely to feed stages/novelty.py's `_partial_extension_match()` gate,
-    which needs to know exactly which exon numbers each fragment covers
-    before treating a match as confirming anything -- `exon_numbers` is
-    that, comma-separated in transcript order (empty if unresolvable, e.g.
-    an old record with no `/number` qualifier on its exon features; such
-    rows are still written -- for the plain non-partial extension lookup,
-    exon_numbers is unused -- but can never satisfy the partial-match gate,
-    which requires it)."""
+    """CDS sequence of every allele with a parseable CDS (genomic or not),
+    for `extension` detection against exon-only alleles. `partial` rows
+    carry `exon_numbers` (transcript order; empty if unresolved) for the
+    partial-extension check."""
     cols = ["gene", "ipd_id", "allele", "genomic", "partial", "fields",
             "cds_length", "cds_sequence", "exon_numbers"]
     n_skipped = 0
@@ -277,13 +227,7 @@ def main(argv: list[str] | None = None) -> int:
             f"not a silently incomplete resources/templates/pool/ref.gene.models.jsonl.gz"
         )
 
-    # A separate, non-genomic-inclusive parse pass for the CDS catalogue
-    # (DESIGN.md S5 `extension` detection) -- deliberately not folded into
-    # the genomic-only `all_records` above (require_genomic=True there is
-    # load-bearing for the pool itself, S2b), and deliberately not the same
-    # IPDSource instance re-used with a flag flip, since .records() commits
-    # to require_genomic at construction (this module's own existing
-    # design, untouched here).
+    # Separate non-genomic parse (incl. partials) for the CDS catalogue.
     cds_source = IPDSource(genomic_genes=target_genes, raw_dir=args.raw_dir,
                             tag=args.ipd_tag, dat_path=args.ipd_dat, require_genomic=False,
                             drop_partial=False)

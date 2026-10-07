@@ -1,62 +1,23 @@
-# HLAONT gene manifest — the single source of per-gene behaviour (development notes invariant 5).
+# HLAONT gene manifest: the single source of per-gene behaviour (invariant 5).
+# Never branch on gene name in code; add a field here.
 #
-# All 47 IPD-IMGT/HLA genes are listed here from commit one; 36 are active in v0
-# (tier 1-3). Never branch on gene name in code — add a field here instead.
+# Fields:
+#   tier, cn_model (H/T/K/U/Y/R/W, DRB3/4/5), calibrator, segment: from
+#     DESIGN.md S2c/S1. segment is filled only where DESIGN names it and is
+#     documentary (CN is per gene).
+#   class: MHC region (I/II/III).
+#   cn_model: diploid_typical is a prior, not an assumption (classical genes
+#     have deletions too). MICA is variable_0_2 (B*48:01-linked deletions on
+#     either haplotype).
+#   audit_genomic_v3.65.0: IPD genomic-template count (provenance only).
+#   assembly_extraction: gtf_coordinate (HLA-N/P/T/U/W/Y/R): templates
+#     extracted from hla_seq/ assemblies (assembly_sources.py; prefers the v2
+#     re-annotation, which adds HLA-R).
+#   audit_hla_seq_v1: distinct assembly-derived sequences (provenance only).
+#   excluded: HLA-Cw is a legacy alias, not a gene.
 #
-# Field provenance, so downstream editors know what to trust:
-#   tier, cn_model (H/T/K/U/Y/R/W and DRB3/4/5), calibrator, segment (where filled) —
-#     stated explicitly in DESIGN.md S2c/S1. High confidence.
-#   class — genomic region (I/II/III), standard MHC organisation, not IPD/DESIGN-sourced.
-#     Used for calibrator grouping (class I/II sit ~1-2Mb apart, DESIGN S1).
-#   cn_model: diploid_typical — DESIGN's worked example spells this `fixed_2` for
-#     HLA-A. Relabelled here on explicit guidance: classical HLA genes have published
-#     exonic deletions (e.g. HLA-A) even though the vast majority of haplotypes carry
-#     no major SV in the coding region. "fixed_2" reads as a hardcoded assumption —
-#     exactly what invariant 3 says to remove. `diploid_typical` is a prior for CI
-#     width/QC thresholds, not a skip switch. See cn_policy below.
-#   cn_model for MICA (variable_0_2) — inferred from DESIGN S1's "MICA: deletion
-#     haplotypes (linked to B*48:01)" note. The deletion can occur on either or both
-#     haplotypes independently (most individuals carry two intact copies, some carry
-#     one, rarely both are deleted), so the range is 0-2 like DRB3/4/5, not capped at 1.
-#     DESIGN gives no vocabulary for this case; this value is inferred, not a quote.
-#   segment — null except the six genes DESIGN S2c names explicitly. Filling the
-#     rest requires resources/segments.yaml, derived from the 8 MHC reference
-#     haplotypes (DESIGN S2c: "a required resource... getting these boundaries
-#     right matters more than any per-gene tuning"). Left null rather than guessed.
-#   audit_genomic_v3.65.0 — genomic-template count from ipd_audit_v3.65.0.txt,
-#     for provenance only. build.py recomputes its own counts; this is not
-#     read by any pipeline code.
-#   assembly_extraction (HLA-N/P/T/U/W/Y/R only, added 2026-08-22) — routes
-#     build.py to resources/templates/assembly_sources.py's AssemblyGTFSource
-#     for genes IPD has no (or only one, ancestry-skewed) genomic template
-#     for: real per-haplotype sequence extracted directly from hla_seq/'s
-#     real assemblies via their own GTF coordinates. Read by build.py, not
-#     branched on by gene name in code (invariant 5). **Updated 2026-09-03,
-#     user-requested:** hla_seq/ gained a full re-annotation pass
-#     (`*_HLA_v2.gtf.gz`, 462 haplotypes, `HLA_SEQ_SNAPSHOT_VERSION =
-#     "hla_seq-2026-09-v2"`), which AssemblyGTFSource now prefers over the
-#     original `*_HLA.gtf.gz` (461 haplotypes, Mar 2025) when both exist.
-#     HLA-N/P/T/U/W/Y's own extracted record counts are confirmed
-#     byte-identical under v2 (same underlying assembly DNA, re-annotated)
-#     -- but HLA-R, previously zero here (the original Immuannot pass never
-#     searched for it), now has real gene-line coordinates on 90/462
-#     haplotypes, yielding 6 distinct real sequences, same mechanism as
-#     every other gene here, not a special case.
-#   audit_hla_seq_v1 (same seven genes) — count of distinct real
-#     assembly-derived sequences that entered the pool for that gene, from
-#     resources/templates/assembly_sources.py's own real run against
-#     hla_seq/ — provenance only, mirrors audit_genomic_v3.65.0's
-#     convention. Field name kept as `audit_hla_seq_v1` after the 2026-09-03
-#     snapshot bump above (not renamed to `_v2`) since six of the seven
-#     genes' own values are unchanged by it; only HLA-R's entry is new.
-#
-# excluded: true -> HLA-Cw, a legacy alias (not a gene) and a parser edge case
-#   (DESIGN S2c), not a gene manifest entry in the working sense.
-#
-# C4A and C4B (DESIGN S2f) are both listed, sharing the rccx segment: "Total C4 CN"
-# is a single depth-ratio readout for the segment, then A-vs-B is a discrimination
-# call (exon 26 peptides) on top of it, not two independently-counted genes. Neither
-# routes through S2a-2e (no IPD star-allele nomenclature for either).
+# C4A/C4B (DESIGN S2f): one total-CN readout plus A/B discrimination; no
+# star-allele typing.
 
 manifest_version: 1
 source:
@@ -269,41 +230,9 @@ genes:
     typing_module: template_polish
     tier: 2
     audit_genomic_v3.65.0: 254
-    # low_cn_floor (added 2026-07-27, real HG00097 ONT benchmark, user's own
-    # hypothesis; re-derived 2026-08-31, user-directed): DRB1 sits in the
-    # same physical block and is essentially always present at real depth,
-    # so a stray, thin cn_estimate for its presence/absence paralogs here
-    # is plausibly cross-mapped DRB1 read leakage, not genuine partial
-    # presence -- pipeline.py treats an estimate below this as CN=0 rather
-    # than rounding normally to 1.
-    #
-    # Re-derived 2026-08-31: stages/cn.py's depth source changed the same
-    # session (see that module's docstring) -- the original 0.9 floor was
-    # tuned against the old Stage-1-matrix-derived signal's scale, and the
-    # new Stage-0 signal (no cross-gene resolution, module docstring)
-    # brings DRB3/4/5's own estimates much closer together when only one
-    # is truly present, since all three are themselves close paralogs of
-    # each other, the same tradeoff already accepted for HLA-H/K/T/U/W.
-    # Real regression found and root-caused directly: HG00097's true
-    # HLA-DRB5 (real single-haplotype presence) now estimates 0.898 -- just
-    # under the old 0.9 floor, silently dropped. Re-derived from the two
-    # real data points now available: HG00320's true-absent HLA-DRB4
-    # estimates 0.47 (floor must stay above this) and HG00097's
-    # true-present HLA-DRB5 estimates 0.898 (floor must stay below this).
-    # 0.5, user's own chosen value: inside that window but close to its
-    # lower edge (0.47), deliberately biased toward the lower end per
-    # invariant 4 (a false absence is the worse failure mode here) --
-    # tighter headroom against HG00320's own 0.47 than a more conservative
-    # midpoint would give, an explicit tradeoff, not an oversight.
-    # Confirmed this does not reopen a false positive: HG00097's own
-    # true-absent HLA-DRB4 now estimates 1.09 -- above *any* floor value
-    # this field alone could use -- but is caught downstream anyway by the
-    # unrelated, already-existing `min_mean_qv` calls.tsv filter (its own
-    # real per-haplotype consensus there is 4 reads / mean_qv 5.0, filtered
-    # from output regardless of this field). Still provisional/unvalidated
-    # beyond these two real samples (invariant 11), scoped to these three
-    # genes only pending real evidence for others sharing
-    # cn_model: variable_0_2 (e.g. MICA).
+    # low_cn_floor: estimates below this are CN 0 (likely DRB1 read leakage).
+    # 0.5 lies between HG00320's absent DRB4 (0.47) and HG00097's present
+    # DRB5 (0.898), biased low (invariant 4). Provisional.
     low_cn_floor: 0.5
 
   - gene: HLA-DRB4
@@ -434,20 +363,9 @@ genes:
     typing_module: template_polish
     tier: 3
     audit_genomic_v3.65.0: 2
-    # "HLA-OLI" (DESIGN S2c's y_oli_insertion segment label) is a synonym
-    # for HLA-R, per the user, 2026-08-22. Routed through the same
-    # assembly_extraction: gtf_coordinate mechanism as the rest
-    # (user-requested 2026-08-22, rather than a separate alignment-discovery
-    # mechanism). **Updated 2026-09-03, user-requested:** the original
-    # hla_seq/ snapshot's Immuannot pass never searched for HLA-R at all
-    # (zero coordinate annotation anywhere in its 461 real assemblies) --
-    # confirmed real, not a pipeline gap on this project's side. A full
-    # v2 re-annotation of hla_seq/ (`*_HLA_v2.gtf.gz`, see the field-legend
-    # note above) does search for it, and finds real gene-line coordinates
-    # on 90/462 haplotypes -- AssemblyGTFSource now prefers those v2 files,
-    # so this gene contributes 6 distinct real sequences to the pool
-    # (audit_hla_seq_v1 below), on top of IPD's own 2 genomic records
-    # (audit_genomic_v3.65.0 above).
+    # HLA-OLI (DESIGN S2c) is a synonym. Templates come from the v2 hla_seq/
+    # annotation (90/462 haplotypes, 6 sequences) plus IPD's 2 genomic
+    # records.
     assembly_extraction: gtf_coordinate
     audit_hla_seq_v1: 6
 
@@ -460,21 +378,13 @@ genes:
     typing_module: template_polish
     tier: 3
     audit_genomic_v3.65.0: 1
-    # Real per-haplotype extraction from hla_seq/'s 461 assemblies
-    # (resources/templates/assembly_sources.py::AssemblyGTFSource),
-    # 2026-08-22 -- directly addresses DESIGN.md's own flagged risk that
-    # IPD's single genomic template for this gene is ancestry-skewed.
-    # audit_hla_seq_v1: 6 distinct real sequences across 90/461 real
-    # haplotypes (matches the known ~20% presence rate exactly).
+    # Assembly templates address IPD's single ancestry-skewed template:
+    # 6 sequences from 90/461 haplotypes (~20% presence).
     assembly_extraction: gtf_coordinate
     audit_hla_seq_v1: 6
 
-  # --- Tier 4: deferred — zero genomic templates in IPD; HLA-N/P/T/U/W now
-  # have real assembly-derived templates (assembly_extraction:
-  # gtf_coordinate, 2026-08-22) despite the tier-4 label, which reflects
-  # IPD's own zero-count and is otherwise unchanged here per the approved
-  # plan -- a tier-scheme reconsideration for these five is a separate,
-  # future call, not made in this pass.
+  # --- Tier 4: zero IPD genomic templates (N/P/T/U/W now have assembly
+  # templates) ---
   - gene: HLA-N
     class: I
     segment: null
@@ -593,17 +503,8 @@ genes:
     audit_genomic_v3.65.0: 0
 
   # --- Deferred module, not template-pool genes (DESIGN S2f) ---
-  # anchor_source: c4_bundle (2026-08-25) -- real hla_seq/ per-haplotype GTFs
-  # do carry gene_name rows for these (C4AL/C4AS/C4BL/C4BS, long/short form x
-  # A/B), unlike IPD -- resources/templates/build_c4_bundle.py extracts them
-  # via the same AssemblyGTFSource mechanism as HLA-N/P/T/U/W/Y/R, collapsed
-  # to gene=C4A/C4B (form kept in each record's own description only, not a
-  # validated A-vs-B call -- see that script's docstring). Read by
-  # resources/anchors/prepare_candidates.py to source anchor candidates from
-  # resources/templates/assembly_bundle/c4.fa.gz instead of the (nonexistent,
-  # by design, S2f) IPD template pool -- never routed through build.py's
-  # ref.gene.fa.gz/assembly_extraction mechanism, which is star-allele-pool
-  # specific and does not apply here.
+  # anchor_source: c4_bundle: anchor candidates come from the C4 bundle
+  # (build_c4_bundle.py), not the template pool.
   - gene: C4A
     class: III
     segment: rccx

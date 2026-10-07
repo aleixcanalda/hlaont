@@ -1,44 +1,19 @@
-"""Assembly-derived template source (sources.py's TemplateSource protocol),
-for HLA genes IPD-IMGT/HLA has no usable genomic template for at all
-(HLA-N/P/T/U/W) or only one, ancestry-skewed template for (HLA-Y --
-DESIGN.md's own flagged risk: a single European-derived template fails to
-recruit reads from the ~20% of haplotypes, mostly non-European, that
-actually carry HLA-Y, producing an ancestry-structured false-negative CN=0).
+"""Assembly-derived template source for genes IPD lacks usable genomic
+templates for (HLA-N/P/T/U/W/R; HLA-Y has a single ancestry-skewed one).
 
-Real per-individual phased genome assemblies (hla_seq/, 232 samples / 461
-haplotype copies) already carry an Immuannot-style GTF annotation with exact
-gene coordinates on a matching per-haplotype assembly contig -- this module
-extracts the gene span plus its exon/CDS/UTR structure directly from that
-real genomic DNA, converts it into the same TemplateRecord/GeneModel shape
-sources.py's IPD parser produces, and lets build.py fold it into the pool
-as a second source.
+Extracts gene spans and exon/CDS/UTR structure from hla_seq/'s phased
+assemblies using their Immuannot GTFs, as TemplateRecord/GeneModel like the
+IPD parser. Accessions are content hashes of the sequence (stable across
+reruns); Immuannot's nearest-match names are kept only for display, never
+as the accession (invariant 7).
 
-Deliberately does NOT use the GTF's own `consensus`/`template_allele`
-attributes as the accession name -- those are Immuannot's own nearest-known-
-IPD-match guess, not an authoritative catalogued name, and treating them as
-one would misrepresent a real individual's sequence as a curated database
-entry (invariant 7: extension != novel; this is the same mistake in a
-different guise). Accessions are instead content-addressed (sha256 of the
-extracted sequence), so a later rerun that adds more hla_seq samples never
-renumbers an existing accession the way a sort-then-enumerate scheme would.
-
-GTF quirks below are all confirmed against real hla_seq files, not assumed:
-- No `intron` feature rows exist at all -- introns are derived as gaps
-  between consecutively-*present* `exon_number` rows, never synthesized for
-  a missing leading exon (a real, partial pseudogene annotation -- e.g. some
-  HLA-W haplotypes are missing exons 1-2 -- must not get a fabricated
-  intron inserted before the first present exon).
-- On minus-strand genes, `exon_number "1"` is already the highest-genomic-
-  coordinate row (i.e. numbering already matches transcript order) -- only
-  coordinate *values* need the revcomp/flip transform, not the ordinals.
-- GTF's `frame` column (0/1/2, GFF convention: bases to trim from this
-  feature's start to reach the next full codon) is the inverse sense from
-  IPD's own `codon_start` (1/2/3, bases already consumed): frame=0 means no
-  bases skipped (codon_start=1), so `codon_start = frame + 1`.
-- A gene with zero UTR rows, or missing start/stop codons, is real
-  pseudogene degeneracy confirmed on real HLA-N (single-exon, no introns)
-  and HLA-W (partial, no UTRs, no start/stop codon) records -- not
-  annotation failure, never papered over or fabricated.
+GTF quirks (checked on real files):
+- No intron rows: introns are gaps between consecutive present exons, never
+  invented before a missing leading exon.
+- Minus-strand exon_number already follows transcript order; only the
+  coordinates are flipped.
+- codon_start = frame + 1.
+- Missing UTRs or start/stop codons are real pseudogene degeneracy.
 """
 from __future__ import annotations
 
@@ -55,26 +30,15 @@ import pysam
 sys.path.insert(0, str(Path(__file__).parent))
 from sources import GeneModel, TemplateRecord  # noqa: E402
 
-# Fixed pin (mirrors sources.py's IPD_DEFAULT_TAG) -- hla_seq/ has no
-# upstream release tag of its own to pin against; chosen from this
-# snapshot's real on-disk file mtimes. Bumped 2026-09-03, user-requested:
-# hla_seq/ gained a full re-annotation pass (`*_HLA_v2.gtf.gz`, 462 real
-# files, ## date: 2026-09-01/02) alongside the original `*_HLA.gtf.gz`
-# (461 files, Mar 2025) -- confirmed by direct grep this is not a cosmetic
-# rerun: the v2 pass finds real HLA-R gene annotation on 90/462 haplotypes,
-# where the original snapshot had zero (genes.yaml's own HLA-R comment
-# previously said so, now stale -- update it alongside this). `records()`
-# below now prefers `*_HLA_v2.gtf.gz` when present, falling back to the
-# legacy `*_HLA.gtf.gz` naming only when it isn't (keeps every existing
-# unit test's `_write_gtf()`-fixture naming working unchanged).
+# hla_seq/ has no release tag; pinned here. records() prefers the v2
+# re-annotation (*_HLA_v2.gtf.gz, which adds HLA-R) and falls back to
+# *_HLA.gtf.gz.
 HLA_SEQ_SNAPSHOT_VERSION = "hla_seq-2026-09-v2"
 
 _V2_GTF_SUFFIX = "_HLA_v2.gtf.gz"
 _LEGACY_GTF_SUFFIX = "_HLA.gtf.gz"
 
-# Pre-extracted, checked-in snapshot of AssemblyGTFSource's own output
-# (BundledAssemblySource below) -- lets build.py cover HLA-N/P/T/U/W/Y/R
-# without a caller needing real hla_seq/ phased assemblies on disk at all.
+# Checked-in snapshot of AssemblyGTFSource output, so no hla_seq/ is needed.
 DEFAULT_BUNDLE_DIR = Path(__file__).parent / "assembly_bundle"
 
 _SEQNAME_SUFFIX_RE = re.compile(r":\d+-\d+$")
@@ -108,20 +72,13 @@ def _iter_gtf_rows(gtf_path: Path) -> Iterator[tuple[str, str, int, int, str, st
 
 
 def _contig_name(seqname: str) -> str:
-    """The GTF seqname carries a `:start-end` suffix the matching FASTA
-    header does not (confirmed real: GTF seqname
-    `HG00097#1#JBIRDD010000044.1:28564748-33733244` vs. FASTA header
-    `HG00097#1#JBIRDD010000044.1`) -- strip it to get the real contig name."""
+    """Strip the GTF seqname's `:start-end` suffix to get the FASTA contig."""
     return _SEQNAME_SUFFIX_RE.sub("", seqname)
 
 
 class AssemblyGTFSource:
-    """Coordinate-lookup extraction for genes with real GTF gene-level
-    annotation in hla_seq/ (HLA-N, HLA-P, HLA-T, HLA-U, HLA-W, HLA-Y, and
-    HLA-R since the 2026-09-03 v2 re-annotation (module docstring) --
-    driven entirely by the `genes` argument, itself driven by genes.yaml's
-    `assembly_extraction: gtf_coordinate` field, never hardcoded here per
-    invariant 5)."""
+    """Extracts genes listed via genes.yaml `assembly_extraction:
+    gtf_coordinate` from hla_seq/ GTF annotations."""
 
     def __init__(self, genes: set[str], hla_seq_dir: Path,
                  all_fasta_path: Path | None = None,
@@ -168,12 +125,8 @@ class AssemblyGTFSource:
                 row["strand"] = strand
                 row["template_allele"] = attrs.get("template_allele")
             elif feature == "exon":
-                # Real quirk, confirmed on HLA-P: a purely-UTR trailing exon
-                # (no CDS content of its own) is numbered "utr", not an
-                # integer -- GeneModel.exons' own type (int | None) already
-                # anticipates this; treat it as unnumbered rather than
-                # guessing an ordinal, and it simply doesn't participate in
-                # intron-gap derivation below (no fabricated adjacency).
+                # Pure-UTR trailing exons are numbered "utr" (HLA-P): keep
+                # them unnumbered, outside intron derivation.
                 num_str = attrs.get("exon_number", "")
                 num = int(num_str) if num_str.isdigit() else None
                 row["exons"].append((num, start, end))
@@ -248,21 +201,12 @@ class AssemblyGTFSource:
         ipd_id = f"ASM{h[:12]}"
         n_haps = len(info["haplotypes"])
         example = info["haplotypes"][0]
-        # Every haplotype contributing to this exact-sequence group went
-        # through the same real Immuannot alignment against the same IPD
-        # reference, so this should always be a single guess in practice;
-        # a real, non-unanimous split (multiple distinct guesses for byte-
-        # identical DNA) is kept, not silently collapsed -- sorted()[0] is
-        # the deterministic pick (invariant 9), and the full set stays in
-        # `description` for anyone auditing the call.
+                # Identical sequences should share one Immuannot guess; if
+                # not, take sorted()[0] and keep all in `description`.
         consensus_names = sorted(info["consensus_names"])
         consensus_note = ",".join(consensus_names) or "n/a"
         nearest_ipd_match = consensus_names[0] if consensus_names else None
-        # Same deterministic-pick/audit-trail treatment as consensus_names
-        # above, but sourced from the GTF's gene-line `template_allele`
-        # attribute rather than the transcript-line `consensus` attribute --
-        # the exact nearest-match name, never `:new`-suffixed (module
-        # docstring, TemplateRecord.gtf_template_allele's own docstring).
+                # Same, from the gene-line `template_allele` (never `:new`).
         template_allele_names = sorted(info["template_allele_names"])
         template_allele_note = ",".join(template_allele_names) or "n/a"
         gtf_template_allele = template_allele_names[0] if template_allele_names else None
@@ -282,21 +226,10 @@ class AssemblyGTFSource:
 
 
 class BundledAssemblySource:
-    """Reads back a bundle written by build_assembly_bundle.py
-    (bundle.fa.gz / bundle.meta.tsv.gz / bundle.models.jsonl.gz) --
-    reconstructs the identical TemplateRecords AssemblyGTFSource would
-    yield from the real hla_seq/ directory the bundle was generated from,
-    without needing that (large, external) directory on disk at all. Each
-    record's own `source`/`source_version` fields are read verbatim from
-    the bundle's meta row (i.e. still "hla_seq-assemblies-gtf" /
-    HLA_SEQ_SNAPSHOT_VERSION, the real origin) -- this class's own
-    `name`/`version` identify the *loading mechanism* for manifest.json's
-    provenance, not a different data source.
-
-    Use AssemblyGTFSource directly (build.py's --hla-seq-dir) instead when
-    a fresher or larger hla_seq/ snapshot is available to extract from;
-    regenerate this bundle from that via build_assembly_bundle.py to update
-    what ships in the repo."""
+    """Loads the checked-in bundle written by build_assembly_bundle.py,
+    yielding the same TemplateRecords AssemblyGTFSource would. Records keep
+    their original source/version; this class's name/version only identify
+    the loader."""
 
     def __init__(self, genes: set[str], bundle_dir: Path = DEFAULT_BUNDLE_DIR):
         self.name = "hla_seq-assemblies-bundle"
@@ -351,11 +284,7 @@ class BundledAssemblySource:
                 source=row["source"], source_version=row["source_version"],
                 gene_model=gene_models.get(row["ipd_id"]),
                 nearest_ipd_match=row["nearest_ipd_match"] or None,
-                # .get(), not [...]: a bundle written before this column
-                # existed must still load (graceful degradation, same
-                # precedent as load_nearest_ipd_match's own missing-lookup
-                # handling), not raise a KeyError on every old checked-in
-                # bundle until it happens to be regenerated.
+                # .get(): older bundles lack this column.
                 gtf_template_allele=row.get("gtf_template_allele") or None,
             )
 

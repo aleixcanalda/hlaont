@@ -21,12 +21,8 @@ from assign import (  # noqa: E402
 sys.path.insert(0, str(Path(__file__).parent.parent / "input"))
 from fastq import AnchorHit, CandidateRead  # noqa: E402
 
-# Synthetic pool: two genes. GENE1 has two close alleles (a handful of
-# substitutions apart); GENE2 is a *near*-duplicate of GENE1*01:01 (~5%
-# substitutions) -- close enough that minimap2 will actually align a GENE1
-# read to it, which is what makes the gene-restriction test meaningful:
-# without the restriction-to-sieved-gene filter, that spurious cross-gene
-# hit would otherwise land in the matrix.
+# Synthetic pool: GENE1 has two close alleles; GENE2 is ~5% from GENE1*01:01,
+# close enough that GENE1 reads align to it (tests the gene restriction).
 _RNG = random.Random(0)
 
 
@@ -150,11 +146,8 @@ def test_no_matrix_when_read_matches_nothing_in_its_sieved_gene(tmp_path):
 
 def test_best_gene_per_read_resolves_ambiguous_sieve_assignment(tmp_path):
     fasta, meta = _write_pool(tmp_path)
-    # r3 was sieved to both GENE1 and GENE2 (ambiguous at the anchor level),
-    # but its actual sequence is an exact GENE1 copy against a ~5%-diverged
-    # GENE2 -- a real, clear winner (far outside the margin-gated
-    # resolution's 0.003 tie tolerance), so it must resolve to full 1.0
-    # credit on GENE1 alone, not a split or default-to-iteration-order pick.
+    # r3 is sieved to both genes but is an exact GENE1 copy: full credit to
+    # GENE1.
     reads = [_read("r3", GENE1_A, genes=("GENE1", "GENE2"))]
 
     matrices = build_gene_matrices(reads, pool_fasta=fasta, pool_meta=meta, n_threads=2)
@@ -164,15 +157,8 @@ def test_best_gene_per_read_resolves_ambiguous_sieve_assignment(tmp_path):
 
 
 def test_best_gene_per_read_margin_gate_splits_near_tied_reads():
-    # Hand-built matrices (no real alignment needed) isolate the
-    # margin-gated resolution logic itself (assign.py's
-    # _GENE_RESOLUTION_MISMATCH_MARGIN docstring). r_tied's own-pool rate
-    # is 0.31% against GENE1 vs 0.12% against GENE2 -- the exact real
-    # HG00097 HLA-H/HLA-T gap that motivated this mechanism -- both within
-    # the 0.003 margin of each other, so its 1.0 depth credit must split
-    # evenly rather than going entirely to GENE2 (the old hard-argmin
-    # winner). r_clear's gap (0% vs 5%) is far outside the margin and must
-    # still resolve to a single full-credit winner, unaffected.
+    # r_tied: 0.31% vs 0.12% (HLA-H/HLA-T gap), within the margin -> split.
+    # r_clear: 0% vs 5% -> single winner.
     def _matrix(gene: str, nm_by_read: dict[str, int], aln_len: int = 10000) -> GeneAssignmentMatrix:
         read_ids = tuple(sorted(nm_by_read))
         nm = np.array([[nm_by_read[r]] for r in read_ids], dtype=np.int32)
@@ -194,16 +180,9 @@ def test_best_gene_per_read_margin_gate_splits_near_tied_reads():
 
 
 def _write_solo_pool(tmp_path: Path) -> tuple[Path, Path, str]:
-    """A single 3000bp allele, no near-identical second allele competing
-    for minimap2's chaining -- deliberately not stages/test_assign.py's
-    own 600bp GENE1_A/GENE1_B pair, whose near-duplicate alleles make
-    minimap2's reported mismatch rate fragile/seed-dependent well below
-    where a single, longer, uncontested reference behaves predictably
-    (confirmed empirically while calibrating these tests: the shared pool
-    stopped reporting hits at ~1.7% mismatch for some reads, while this
-    pool reports cleanly and consistently up to ~8%). Needed for reliably
-    testing max_read_mismatch_rate at specific rates, not for the
-    gene-restriction/span/determinism tests above, which don't need it."""
+    """A single 3000bp allele: without a near-identical competitor,
+    minimap2's mismatch reporting is stable up to ~8%, so
+    max_read_mismatch_rate can be tested at specific rates."""
     ref = _random_seq(3000)
     fasta = tmp_path / "solo_pool.fa.gz"
     with gzip.open(fasta, "wt") as fh:
@@ -229,10 +208,8 @@ def test_read_within_default_mismatch_rate_is_kept(tmp_path):
 
 def test_read_above_default_mismatch_rate_is_dropped(tmp_path):
     fasta, meta, ref = _write_solo_pool(tmp_path)
-    # 210/3000 = 7% mismatch -- minimap2 still reports this hit under this
-    # module's scoring string (confirmed empirically: ~8-9% is where it
-    # stops reporting anything at all), but it's above the 6% default
-    # gate, so the read must not survive into the matrix at all.
+    # 7% mismatch: still reported by minimap2 (~8-9% limit) but above the 6%
+    # gate.
     read = _mutate(ref, 210, random.Random(2))
     reads = [_read("r_bad", read, genes=("SOLO",))]
 

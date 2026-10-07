@@ -90,14 +90,8 @@ def test_low_coverage_not_near_edge_is_dropped(tmp_path):
 
 def test_low_coverage_near_edge_is_rescued(tmp_path):
     fasta, meta = _write_anchors(tmp_path)
-    # Only overlaps the first 380bp of the anchor (38% coverage) but starts
-    # at position 0 -- within anchor_edge_distance_bp of the 5' end. Must be
-    # >= ~350bp: FuFiHLA's ported scoring string (-A1 -s350) means minimap2
-    # reports nothing below that matched-score floor, regardless of this
-    # sieve's own coverage/edge test -- a 150bp match, as this test used to
-    # use under mappy's map-ont preset, is invisible to minimap2 entirely
-    # under FuFiHLA's real scoring (verified 2026-07-21: 150bp -> 0 PAF
-    # lines, 400bp -> reported normally).
+    # Covers 38% of the anchor but starts at 0 (edge rescue). Must be
+    # >= ~350bp: -s350 hides shorter matches.
     read_seq = TARGET_SEQ[0:380]
     fq = _write_fastq(tmp_path, {"r1": read_seq})
 

@@ -39,11 +39,8 @@ def _matrix(
     read_ids: tuple[str, ...],
     cells: dict[tuple[str, str], tuple[int, int, int]],
 ) -> GeneAssignmentMatrix:
-    """Build a GeneAssignmentMatrix directly from (matches, aln_block_len, nm)
-    cells, bypassing minimap2/assign.py -- this module's selection logic is
-    tested in isolation from the alignment step, same pattern as
-    stages/test_cn.py. (The real alignment path, including span/CIGAR
-    capture and the context scorer, is exercised separately below.)"""
+    """GeneAssignmentMatrix from (matches, aln_block_len, nm) cells, without
+    minimap2."""
     matches = np.zeros((len(read_ids), len(allele_ids)), dtype=np.int32)
     aln_len = np.zeros_like(matches)
     nm = np.zeros_like(matches)
@@ -143,23 +140,14 @@ def test_select_cn2_homozygous_sample_gives_small_lrt():
     m = _diploid_matrix(hetero=False)
     call = select_template_set_flat(m, cn=2, error_model=_MODEL)
 
-    # cn=2 still returns two distinct alleles (A2 is the best runner-up),
-    # but the LRT against the single-allele baseline should be small --
-    # this is the statistic a caller uses instead of FuFiHLA's 4x-ratio
-    # rule to decide "report as homozygous".
+    # cn=2 still returns two alleles, but the LRT vs single-allele is small.
     assert call.single_allele == "A1"
     assert call.lrt_statistic < 5.0
 
 
 def test_select_cn2_falls_back_to_single_allele_if_only_one_candidate():
-    # Real HLA-K/HLA-U finding (development notes 2026-09-10 session): a genuinely
-    # homozygous sample can have only one real candidate allele with read
-    # support -- itertools.combinations(candidates, cn) has nothing to
-    # search (can't repeat one element), so this must fall back to the
-    # single-candidate answer, not raise. `cn` stays at the requested value
-    # (the real estimated copy number); only the distinct-allele count
-    # collapses to one, same shape `_collapse_to_single_allele()` already
-    # produces for the post-search LRT/read-ratio case.
+    # One supported candidate with cn=2 (HLA-K/U): single-allele call with
+    # cn kept, not an error.
     m = _matrix("G", ("A1",), ("r1",), {("r1", "A1"): (100, 100, 0)})
     call = select_template_set_flat(m, cn=2, error_model=_MODEL)
 
@@ -193,17 +181,9 @@ def test_select_template_set_is_deterministic():
 
 
 def _outlier_pair_log_likelihoods() -> tuple[tuple[str, ...], np.ndarray]:
-    """Synthetic (20 reads x 3 candidates) log-likelihood matrix
-    reproducing the real H2009 CASTLE HLA-DQB1 mechanism (development notes
-    2026-09-10 session, verified against real numbers before this test was
-    written): A1/A2 are a true heterozygous pair whose per-read
-    discriminating power is small (most reads barely tell them apart), while
-    A3 is a spurious, unrelated candidate that only 2 reads support -- but
-    with an enormous per-read likelihood gap, since those 2 reads simply
-    don't belong to the A1/A2 family at all. Raw summed log-likelihood
-    favours (A1, A3) over the true (A1, A2) pair despite A3 having far fewer
-    supporting reads -- exactly the bug the read-count/ratio floor exists to
-    close."""
+    """20 reads x 3 candidates (H2009 DQB1 shape): A1/A2 are the true pair
+    with small per-read differences; A3 has 2 reads with huge per-read
+    gaps, so summed logL prefers (A1, A3)."""
     candidates = ("A1", "A2", "A3")
     ll = np.zeros((20, 3))
     ll[0:2] = [-50.0, -50.0, -1.0]  # 2 outlier reads: real signal is A3, not A1/A2
@@ -216,11 +196,7 @@ def _outlier_pair_log_likelihoods() -> tuple[tuple[str, ...], np.ndarray]:
 
 
 def test_select_template_set_without_floor_reproduces_outlier_pair_bug():
-    # Documents the real bug this floor exists to fix: with the floor
-    # disabled (select_template_set()'s own default), raw total
-    # log-likelihood picks the 2-read-backed spurious pair over the true,
-    # broadly (if subtly) supported pair -- confirming the synthetic setup
-    # actually reproduces the failure mode before testing the fix below.
+    # Without the floor the spurious pair wins (reproduces the bug).
     candidates, ll = _outlier_pair_log_likelihoods()
     call = select_template_set("G", candidates, ll, cn=2)
     assert call.alleles == ("A1", "A3")
@@ -271,10 +247,7 @@ def test_select_template_set_read_count_floor_collapses_when_every_combo_fails()
 
 
 def test_select_template_set_read_count_floor_parallel_matches_sequential():
-    # Same shape as test_select_template_set_parallel_matches_sequential
-    # above, but with the floor active -- confirms _score_combo's own
-    # eligibility check (the parallel path) agrees with the sequential
-    # loop's, not just the unfiltered case.
+    # Parallel path (_score_combo) must apply the floor like the sequential one.
     read_ids = tuple(f"r{i}" for i in range(20))
     noise_alleles = tuple(f"N{i}" for i in range(25))
     alleles = ("A1", "A2") + noise_alleles
@@ -323,10 +296,7 @@ def test_narrow_candidates_keeps_close_drops_far():
 
 
 def test_narrow_candidates_floor_prevents_zero_threshold_collapse():
-    """Best candidate has a literal 0.0 aggregate mismatch rate -- without
-    the floor, multiplier * 0.0 == 0.0 would drop every other candidate,
-    including a real second haplotype allele with genuine small divergence
-    from the first."""
+    """With a 0.0 best rate, the floor keeps a real second allele."""
     m = _matrix(
         "G", ("A1", "A2"), ("r0", "r1"),
         {
@@ -359,14 +329,8 @@ def test_narrow_candidates_caps_survivor_count():
 
 
 def test_narrow_candidates_prioritises_depth_over_single_read_noise():
-    """Regression for a real HG00097 ONT finding: HLA-A's true allele
-    (27 reads, rate 0.0120) was crowded out of the fixed-size-50 cap by
-    dozens of alleles with exactly one fluke read at a much lower aggregate
-    rate (0.0031) -- a small-sample statistic, not a better match. A
-    well-supported candidate must outrank thinly-supported ones for a
-    scarce cap slot regardless of raw rate. The 5 noise alleles here share
-    an identical read/rate signature, so at most 2 of them (this module's
-    per-signature cap) survive alongside TRUE -- 3 total, not 6."""
+    """A 27-read true allele outranks one-read flukes with lower rates
+    (HLA-A). The 5 noise alleles share a signature, so 2 survive: 3 total."""
     read_ids = tuple(f"r{i}" for i in range(10))
     # TRUE: well-supported (10 reads), moderate rate (0.05).
     cells = {(r, "TRUE"): (95, 100, 5) for r in read_ids}
@@ -386,16 +350,8 @@ def test_narrow_candidates_prioritises_depth_over_single_read_noise():
 
 
 def test_narrow_candidates_depth_priority_holds_against_multi_read_noise():
-    """A fixed read-count floor (e.g. >=4 reads) is not enough in a dense
-    pool: real HG00097 data showed off-target candidates picking up several
-    (not just one) real reads by chance, at a lower aggregate rate than the
-    true, much-deeper-supported allele (HLA-C: true allele 62 reads/0.0107
-    vs off-target candidates at 4-9 reads/0.0067-0.0086). Depth-first
-    ranking must hold regardless of how many reads the noise picked up, as
-    long as it's fewer than the true allele's. The 5 off-target alleles
-    here share an identical read/rate signature, so at most 2 of them
-    (this module's per-signature cap) survive alongside TRUE -- 3 total,
-    not 6."""
+    """Depth-first ranking also beats multi-read noise (HLA-C: 62 reads vs
+    4-9). 3 total survive (per-signature cap)."""
     read_ids = tuple(f"r{i}" for i in range(30))
     # TRUE: deep support (30 reads), moderate rate.
     cells = {(r, "TRUE"): (95, 100, 5) for r in read_ids}  # rate 0.05
@@ -416,13 +372,8 @@ def test_narrow_candidates_depth_priority_holds_against_multi_read_noise():
 
 
 def test_narrow_candidates_dedup_preserves_distinct_second_haplotype():
-    """Regression for the real HG00097 HLA-A finding: a large cluster of
-    IPD names that are read-indistinguishable from each other (identical
-    reads, near-identical rate -- e.g. 127 "03:01:01" sub-alleles all hit
-    by the same 27 reads) must cost only `_MAX_CANDIDATES_PER_SIGNATURE`
-    (2) cap slots, not one per name, so a genuinely different
-    second-haplotype family isn't silently squeezed out of the candidate
-    set entirely."""
+    """Read-indistinguishable names (HLA-A 03:01:01 cluster) take only 2 cap
+    slots, leaving room for a distinct second haplotype."""
     cluster_reads = tuple(f"c{i}" for i in range(27))
     other_reads = tuple(f"o{i}" for i in range(14))
     cells: dict[tuple[str, str], tuple[int, int, int]] = {}
@@ -464,12 +415,8 @@ def test_narrow_candidates_is_deterministic():
 
 
 def test_select_template_set_parallel_matches_sequential():
-    """n_threads>1 must find the identical winning set/weights/likelihood as
-    n_threads=1 -- ProcessPoolExecutor.map() preserves call order, so the
-    "first max wins" tie-break (invariant 9) sees the same sequence of
-    combinations either way. Padded with weak-support noise alleles so the
-    candidate count actually crosses _MIN_COMBOS_FOR_PARALLEL and exercises
-    the pool path, not just the sequential fallback."""
+    """n_threads > 1 gives the same result as sequential (map() keeps order).
+    Padded past _MIN_COMBOS_FOR_PARALLEL to exercise the pool path."""
     read_ids = tuple(f"r{i}" for i in range(20))
     noise_alleles = tuple(f"N{i}" for i in range(25))
     alleles = ("A1", "A2") + noise_alleles
@@ -565,10 +512,7 @@ def test_select_template_set_ont_r10_end_to_end(tmp_path):
 
 
 def test_context_log_likelihoods_matches_select_template_set_ont_r10_inputs(tmp_path):
-    """context_log_likelihoods() alone, on the same fixture, should already
-    favour each read's true allele -- i.e. the wiring from spans through to
-    a per-cell log-likelihood is doing real work, not just returning the
-    floor everywhere."""
+    """context_log_likelihoods() alone favours each read's true allele."""
     allele_a = _random_seq(700)
     allele_b = _mutate(allele_a, 5, random.Random(2))
 

@@ -1,9 +1,4 @@
-"""Unit tests for build_c4_form_signature.py's exon26/intron9 derivation --
-a tiny synthetic bundle (not the real 362-record production one) so the
-logic (modal-length filtering, majority-vote consensus, discriminating-
-position diff, form-grouped intron length medians) is checked directly,
-independent of real hla_seq/ data.
-"""
+"""Unit tests for build_c4_form_signature.py on a tiny synthetic bundle."""
 from __future__ import annotations
 
 import csv

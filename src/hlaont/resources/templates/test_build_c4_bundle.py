@@ -1,8 +1,5 @@
-"""Unit tests for build_c4_bundle.py's C4AL/C4AS/C4BL/C4BS -> C4A/C4B
-collapse (DESIGN.md S2f) -- the real extraction machinery (AssemblyGTFSource)
-is already covered by test_assembly_sources.py; this file covers only the
-gene/allele renaming and manifest bookkeeping build_c4_bundle.py adds on top.
-"""
+"""Unit tests for build_c4_bundle.py's C4AL/AS/BL/BS -> C4A/C4B collapse and
+manifest."""
 from __future__ import annotations
 
 import gzip
@@ -85,10 +82,7 @@ def test_collapses_all_four_forms_to_two_genes(tmp_path: Path) -> None:
 
 
 def test_writes_gene_models_keyed_consistently_with_meta(tmp_path: Path) -> None:
-    """c4.models.jsonl.gz (2026-08-26 Phase 2 addition, module docstring) --
-    stages/c4_form.py needs every record's real exon/intron structure, keyed
-    by ipd_id the same way build.py's own write_gene_models_jsonl_gz keys
-    the NPTUWYR bundle."""
+    """c4.models.jsonl.gz is keyed by the same ipd_ids as the meta."""
     hla_seq_dir = tmp_path / "hla_seq"
     hla_seq_dir.mkdir()
     _write_hla_seq_fixture(hla_seq_dir, "C4AL", "SAMPLE0_1", "ctg0", _contig_seq(400, "C4AL"))

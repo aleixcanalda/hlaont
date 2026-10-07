@@ -1,9 +1,5 @@
-"""End-to-end test for the orchestration pipeline (stages/pipeline.py):
-FASTQ -> sieve -> assign -> cn -> genotype -> consensus -> hla_typing ->
-novelty, over a small fully-synthetic two-gene manifest (a target gene and
-its calibrator) so it needs neither the real 173-anchor set nor the real
-23,671-allele IPD pool.
-"""
+"""End-to-end tests for stages/pipeline.py on a synthetic two-gene manifest
+(a target gene and its calibrator)."""
 from __future__ import annotations
 
 import dataclasses
@@ -25,25 +21,10 @@ from phasing import ReadPhase  # noqa: E402
 
 
 def _write_c4_pool_files(directory: Path) -> tuple[Path, Path]:
-    """Tiny synthetic C4A/C4B pool (stages/c4_cn.py, DESIGN.md S2f) --
-    run_sample() now always builds a second, separate matrix against a C4
-    pool by default; every test in this file must not silently hit the
-    real, much larger production resources/templates/assembly_bundle/
-    c4.fa.gz just because it only cares about GENE1/CALIB1 -- confirmed
-    directly that minimap2 is real slow on that pool's real ~20kb x
-    362-sequence, highly repetitive RCCX content, not a guess.
-
-    2026-08-26 Phase 2 addition: the meta.tsv now carries the full
-    production column set (stages/c4_form.py's load_c4_allele_annotations()
-    reads `description`/`ipd_id` via csv.DictReader -- a 2-column
-    gene/allele-only file would KeyError). `c4_models_path` is left at its
-    real production default in every test call site (not overridden here):
-    these synthetic ipd_ids never match a real one in that file, so every
-    annotation legitimately comes back with exon26/intron9 both None
-    (correctly reported as uninformative by both Phase 2 classifiers, not a
-    crash) -- loading that ~362-line JSON file costs nothing like the
-    minimap2-against-362-real-sequences cost this fixture exists to avoid.
-    """
+    """Tiny synthetic C4A/C4B pool, so tests don't align against the slow
+    production C4 bundle. Meta has the full production columns (c4_form.py
+    reads description/ipd_id); synthetic ipd_ids match no real model, so
+    Phase 2 reports every read uninformative."""
     fasta = directory / "c4_pool.fa.gz"
     with gzip.open(fasta, "wt") as fh:
         fh.write(">C4A*asmtest\n" + "ACGT" * 20 + "\n")
@@ -62,27 +43,12 @@ def _write_c4_pool_files(directory: Path) -> tuple[Path, Path]:
 _TINY_C4_DIR = Path(tempfile.mkdtemp(prefix="hlaont_test_c4_"))
 TINY_C4_FASTA, TINY_C4_META = _write_c4_pool_files(_TINY_C4_DIR)
 
-# The extra calls.tsv row labels output.py's write_calls_tsv() can emit for
-# C4 (2026-08-26/27, user-requested, revised repeatedly -- see that
-# function's own docstring) -- shared by this file, test_output.py, and
-# test_cli.py so all three filter them out identically when comparing
-# against len(result.haplotype_calls). 2026-09-01: "C4A"/"C4B" (the
-# proportional vote-ratio split) dropped from calls.tsv entirely,
-# superseded by the directly-measured "C4AL"/"C4AS"/"C4BL"/"C4BS" rows --
-# see write_calls_tsv()'s own docstring for the full rationale.
+# Extra C4 rows in calls.tsv; shared with test_output.py and test_cli.py to
+# filter them out.
 C4_EXTRA_CALLS_TSV_GENES = {"C4", "C4AL", "C4AS", "C4BL", "C4BS"}
 
-# 2026-09-01 CN-normalisation revision (stages/cn.py's own docstring):
-# every run_sample()/run_sample_phased() call in this file injects
-# control_depth directly rather than aligning against a real chr17 control
-# reference -- these tests exercise unrelated pipeline behaviour (LRT
-# collapse, phasing, CN rounding thresholds, ...) and would otherwise need
-# a real, matching synthetic chr17 fixture just to get a nonzero control
-# signal. 20.0 reproduces exactly what every one of this file's fixtures'
-# old calibrator-panel median was (CALIB1's own depth: 10 calib_a + 10
-# calib_b reads = 20, its sole class-I "primary" calibrator role) -- every
-# existing cn_estimate/threshold assertion in this file was derived
-# against that same number, so this preserves them unchanged.
+# Injected chr17 control depth (equals the old calibrator median, CALIB1's
+# 20 reads), so tests need no chr17 fixture.
 _TEST_CONTROL_DEPTH = 20.0
 
 
@@ -135,17 +101,8 @@ def _write_pool(tmp_path, records: dict[str, tuple[str, str]]):
 
 
 def _write_anchors(tmp_path, anchors: dict[str, tuple[str, str]]):
-    """anchors: anchor_name -> (gene, sequence), all role=target.
-
-    `length` (2026-09-01, stages/cn.py's own sieve-reuse depth revision):
-    stage0_depth_by_gene() now reconstructs real aligned bases as
-    AnchorHit.coverage * this column's own value, straight off the real
-    Stage 0 sieve alignment against this same anchors.fa.gz -- must be the
-    anchor's own real sequence length (len(seq)), not omitted, or every
-    gene's CN silently comes back zero (no length -> no depth contribution
-    at all, same graceful-degradation contract stage0_depth_by_gene() uses
-    for a genuinely absent gene, which a length-less synthetic fixture is
-    indistinguishable from)."""
+    """anchors: anchor_name -> (gene, sequence), all role=target. `length`
+    must be the real sequence length or CN comes back zero."""
     fasta = tmp_path / "anchors.fa.gz"
     with gzip.open(fasta, "wt") as fh:
         for name, (_, seq) in anchors.items():
@@ -169,17 +126,9 @@ def _write_fastq(tmp_path, reads: list[tuple[str, str]]):
 
 
 def _write_chr17_control_fixture(tmp_path) -> tuple[Path, str]:
-    """Tiny synthetic chr17-control reference (stages/chr17_control.py,
-    2026-09-01 CN-normalisation revision) -- unrelated in sequence to every
-    other synthetic fixture in this file (a different, fixed seed), so it
-    never coincidentally aligns against GENE1/CALIB1's own anchors/pool.
-    Only test_cli.py needs this: it drives the real argparse CLI path,
-    which has no --control-depth escape hatch (deliberately -- that is a
-    test-only override, not something a real user should be able to fake),
-    so it points --chr17-control-fasta at this instead of the real 4.5Mb
-    resource. Every other test in this file/test_output.py injects
-    control_depth directly via run_sample()/run_sample_phased()'s own
-    keyword argument and does not need this."""
+    """Tiny synthetic chr17 control reference (own seed, so it never aligns
+    to GENE1/CALIB1). Only test_cli.py needs it: the CLI can't inject
+    control_depth."""
     seq = "".join(random.Random(31337).choice("ACGT") for _ in range(300))
     path = tmp_path / "chr17_control_test.fa.gz"
     with gzip.open(path, "wt") as fh:
@@ -263,10 +212,8 @@ def test_run_sample_end_to_end(tmp_path):
 
 
 def test_run_sample_reports_absent_gene_without_crashing(tmp_path):
-    """A gene with zero of its own reads, alongside a working calibrator,
-    must show up as a recorded GeneFailure (CN estimate of exactly 0.0,
-    invariant 4's "unconfirmed absence") rather than silently vanishing or
-    crashing the run."""
+    """A gene with no reads is a recorded GeneFailure with CN 0.0, not a
+    crash or a silent omission."""
     rng = random.Random(7)
     calib_a = _random_seq(700, rng)
     calib_b = _mutate(calib_a, 5, random.Random(8))
@@ -307,10 +254,8 @@ def test_run_sample_reports_absent_gene_without_crashing(tmp_path):
 
 
 def test_run_sample_caps_cn_at_max_cn(tmp_path):
-    """A gene recruiting far more depth than its calibrator (real HG00097
-    finding: HLA-C/MICA/HLA-DRB1 all rounded above 2) must have its
-    *search-sizing* cn_int clamped to max_cn -- the raw cn_estimate stays
-    honest/uncapped in gene_cn for diagnosis."""
+    """Excess depth clamps the search-sizing cn_int to max_cn; the raw
+    cn_estimate stays uncapped in gene_cn."""
     rng = random.Random(321)
     allele_a = _random_seq(700, rng)
     allele_b = _mutate(allele_a, 5, random.Random(11))
@@ -354,14 +299,8 @@ def test_run_sample_caps_cn_at_max_cn(tmp_path):
 
 
 def test_run_sample_collapses_weak_lrt_to_homozygous_call(tmp_path, monkeypatch):
-    """When Stage 2's LRT says weak evidence for two distinct alleles,
-    pipeline.py must collapse to a single haplotype call built from every
-    read in the gene's matrix (not split across two clusters where one is
-    noise) -- stages/consensus.py's own docstring names this gap and how to
-    close it; this exercises the orchestration-layer half. The real fixture
-    here is genuinely heterozygous (two distinct real alleles) -- lrt_statistic
-    is forced low via monkeypatch specifically to isolate the collapse
-    *mechanism* from whether real ONT data naturally produces a low LRT."""
+    """A weak LRT collapses to one haplotype built from all reads. The
+    fixture is heterozygous; the LRT is forced low to isolate the collapse."""
     rng = random.Random(123)
     allele_a = _random_seq(700, rng)
     allele_b = _mutate(allele_a, 5, random.Random(1))
@@ -415,20 +354,9 @@ def test_run_sample_collapses_weak_lrt_to_homozygous_call(tmp_path, monkeypatch)
 
 
 def test_run_sample_collapses_zero_read_haplotype_despite_high_lrt(tmp_path, monkeypatch):
-    """Real HLA-B finding: min_heterozygous_lrt alone doesn't catch a
-    "distinct" second allele with essentially no reads behind it. Fixture
-    gives allele_b exactly one real read (the real HLA-B shape: one
-    genuinely divergent read, not zero) so it survives stage1_n_best=1's
-    own-best-hit restriction as a real Stage 1 candidate at all -- a fully
-    zero-read allele_b is invisible to candidate_alleles() under
-    production's n_best=1 default and select_template_set_ont_r10() raises
-    before any collapse logic runs (2026-08-07 finding, this fixture
-    previously predated that default). build_gene_consensus()'s real hard
-    read partition should still send only that 1 read to the second,
-    merely-plausible candidate the cn=2 combination search has to name --
-    far below min_reads_per_haplotype. lrt_statistic is forced high via
-    monkeypatch specifically to isolate this check from the LRT check
-    above it (same style as the weak-LRT test above, opposite direction)."""
+    """A second allele with one read (HLA-B shape) collapses despite a high
+    LRT, via min_reads_per_haplotype. One read (not zero) keeps allele_b a
+    Stage 1 candidate at n_best=1. LRT forced high to isolate this check."""
     rng = random.Random(321)
     allele_a = _random_seq(700, rng)
     allele_b = _mutate(allele_a, 5, random.Random(1))  # same distance as the weak-LRT fixture
@@ -484,16 +412,8 @@ def test_run_sample_collapses_zero_read_haplotype_despite_high_lrt(tmp_path, mon
 
 
 def test_run_sample_collapses_low_ratio_haplotype_despite_high_lrt(tmp_path, monkeypatch):
-    """User-requested check, distinct from min_reads_per_haplotype: a minor
-    haplotype can clear the absolute read-count floor (3) yet still be a
-    small fraction of the major haplotype's depth -- e.g. 3 reads vs 40 --
-    which is the signature of a real, dominant homozygous call with a
-    trickle of cross-mapped/misassigned reads, not a genuine second
-    haplotype. Fixture keeps the minor count exactly at the absolute floor
-    (3, so min_reads_per_haplotype alone does not fire) while the ratio
-    (3/40 = 0.075) sits below min_haplotype_read_ratio's default 0.1.
-    lrt_statistic is forced high via monkeypatch, same style as the
-    zero-read test above, to isolate this check from the other two."""
+    """A minor haplotype at exactly the absolute floor (3 reads) but 3/40 =
+    0.075 < min_haplotype_read_ratio collapses. LRT forced high."""
     rng = random.Random(321)
     allele_a = _random_seq(700, rng)
     allele_b = _mutate(allele_a, 5, random.Random(1))
@@ -556,20 +476,9 @@ def _manifest_entry_for_raw_cn_int(
 
 
 def test_raw_cn_int_diploid_typical_no_longer_forces_max_cn():
-    """2026-08-31 revision, user-directed: `diploid_typical` used to force
-    cn_int to max_cn unconditionally whenever the raw estimate rounded to
-    >=1, on the reasoning that the old matrix-derived depth (assign.py's
-    best_gene_per_read()) was too noisy to trust a genuine CN=1 reading.
-    stages/cn.py's depth source changed the same session specifically
-    because it was shown, on real data, to systematically *undercount* a
-    different gene cluster (HLA-H/K/T/U/W) -- and real HG00097/HG00320
-    checks found every diploid_typical gene's raw estimate already lands
-    close to 2 under the new signal without forcing. Forcing is removed:
-    a real, low estimate (0.8, which used to force cn_int=2 regardless
-    since the old branch only checked "did this round to >=1") must now
-    round via the ordinary >0.25/>1.25 thresholds honestly, the same rule
-    every other gene already uses -- otherwise a genuine single-copy
-    deletion in a normally-diploid gene is silently masked."""
+    """diploid_typical genes are no longer forced to max_cn: an estimate of
+    0.8 rounds by the ordinary thresholds, so a real deletion isn't
+    masked."""
     entry = _manifest_entry_for_raw_cn_int(cn_model="diploid_typical")
     assert pipeline._raw_cn_int_for_gene(entry, 0.8, pipeline._round_cn_estimate, max_cn=2) == 1
 
@@ -605,13 +514,8 @@ def _write_genes_yaml_variable_cn_model(tmp_path):
 
 
 def test_run_sample_asymmetric_cn_rounding_calls_presence_below_round_half(tmp_path):
-    """2026-08-23, user-requested: `_round_cn_estimate`'s presence bar
-    (>0.25) is below plain round()'s (>=0.5) -- real HG00097 motivating
-    case was HLA-U (cn_estimate 0.41, present on ~86.5% of real hla_seq/
-    haplotypes) rounding to 0 and dropping out of calls.tsv entirely.
-    Fixture: 5 VARGENE reads against a 20-read CALIB1 calibrator ->
-    cn_estimate = 2*5/20 = 0.5 exactly, which plain round() sends to 0
-    (Python's round-half-to-even) but the new rule sends to 1."""
+    """cn_estimate 0.5 (5 reads vs 20 calibrator) -> CN 1 (>0.25 presence
+    bar), where round() gives 0 (HLA-U at 0.41)."""
     rng = random.Random(2023)
     var_allele = _random_seq(700, rng)
     calib_a = _random_seq(700, random.Random(55))
@@ -653,15 +557,8 @@ def test_run_sample_asymmetric_cn_rounding_calls_presence_below_round_half(tmp_p
 
 
 def test_run_sample_asymmetric_cn_rounding_sizes_search_at_two_above_1_25(tmp_path):
-    """Upper threshold of the same rule: cn_estimate 1.3 (2*13/20) rounds
-    to 1 under plain round() but must round to 2 under the new >1.25 rule
-    -- checked via the reported `cn` field (the search-sizing integer) only.
-    Deliberately not asserting on row count/allele recovery: with only a
-    single real read supporting the second candidate, whether the
-    downstream LRT/read-floor/ratio collapse checks fold this back to one
-    reported row is a separate, already-covered question (the collapse
-    tests elsewhere in this file) -- this test isolates the rounding rule
-    itself, which is reflected in `cn` on every row regardless."""
+    """cn_estimate 1.3 -> cn 2 (>1.25), where round() gives 1. Checks only
+    the reported `cn`; collapse is tested elsewhere."""
     rng = random.Random(2024)
     var_allele_a = _random_seq(700, rng)
     var_allele_b = _mutate(var_allele_a, 5, random.Random(1))
@@ -721,13 +618,8 @@ def _write_genes_yaml_with_low_cn_floor(tmp_path):
 
 
 def test_run_sample_applies_low_cn_floor(tmp_path):
-    """A gene with genes.yaml's low_cn_floor set (DRB3/4/5 in the real
-    manifest) must be reported as CN=0 when its raw estimate falls below
-    that floor -- even though plain round() would round it up to 1 and
-    attempt a real single-allele call. User's own hypothesis: for genes
-    sharing a physical block with an always-present neighbour (DRB1), a
-    thin estimate is more plausibly cross-mapped read leakage than genuine
-    partial presence."""
+    """A gene with low_cn_floor (DRB3/4/5) below its floor is CN 0, even
+    though round() would give 1."""
     rng = random.Random(999)
     calib_a = _random_seq(700, rng)
     calib_b = _mutate(calib_a, 5, random.Random(1000))
@@ -779,12 +671,8 @@ def _drb_gene_cn(gene: str, cn_estimate: float | None) -> pipeline.GeneCN:
 
 
 def test_drb345_mutual_exclusivity_pulls_ambiguous_gene_down_to_one():
-    """User-requested, 2026-08-26: real HG00097 shape -- DRB3 rounds to 2
-    (raw estimate 1.49, in the ambiguous (1.2, 2.0) band above the ordinary
-    >1.25 cutoff), DRB5 independently rounds to a confident 1 (raw 1.02).
-    Summed, that's 3 copies at a locus where a real haplotype carries at
-    most one of DRB3/DRB4/DRB5 -- DRB3 must be pulled down to 1 (the two
-    genes read as heterozygous, one haplotype each), not left at 2."""
+    """HG00097 shape: DRB3 at 2 (raw 1.49) and DRB5 at 1 (raw 1.02) sum to 3;
+    DRB3 is pulled down to 1."""
     cn_int = {"HLA-DRB3": 2, "HLA-DRB4": 0, "HLA-DRB5": 1}
     gene_cn = {
         "HLA-DRB3": _drb_gene_cn("HLA-DRB3", 1.49),
@@ -809,10 +697,7 @@ def test_drb345_mutual_exclusivity_leaves_non_conflicting_sum_alone():
 
 
 def test_drb345_mutual_exclusivity_requires_a_confident_partner():
-    """Two genes both at cn_int=2 (e.g. two independently ambiguous
-    estimates) with no gene confidently at 1 -- there's no basis in the
-    user's requested rule to prefer pulling one down over the other, so
-    neither should be touched even though the group sum (4) is impossible."""
+    """Two genes at 2 with no confident 1 partner: neither is changed."""
     cn_int = {"HLA-DRB3": 2, "HLA-DRB4": 0, "HLA-DRB5": 2}
     gene_cn = {
         "HLA-DRB3": _drb_gene_cn("HLA-DRB3", 1.4),
@@ -842,13 +727,8 @@ def test_drb345_mutual_exclusivity_ignores_genes_outside_the_ambiguous_band():
 # ---------------------------------------------------------------------------
 
 def _write_mini_bam_with_phase_tags(tmp_path: Path, tags: dict[str, tuple[int, int]]) -> Path:
-    """A synthetic mini-BAM carrying only what run_sample_phased() actually
-    reads from it: read name -> (HP, PS) tags (input/phasing.py). Coordinates
-    are irrelevant here -- Stage 0 extraction (DESIGN.md S3.1) is assumed to
-    have already happened by the time this function's caller (cli.py) hands
-    a mini-BAM to run_sample_phased(), so this fixture skips straight to
-    "a mini-BAM with real phase tags on it", not a full extraction round-trip
-    (that mechanism is already covered by input/test_bam.py)."""
+    """Synthetic mini-BAM carrying only read-name HP/PS tags (coordinates
+    are irrelevant to run_sample_phased())."""
     header = {"HD": {"VN": "1.6", "SO": "coordinate"}, "SQ": [{"SN": "chr6", "LN": 1000}]}
     bam_path = tmp_path / "phased_mini.bam"
     with pysam.AlignmentFile(str(bam_path), "wb", header=header) as bf:
@@ -868,12 +748,8 @@ def _write_mini_bam_with_phase_tags(tmp_path: Path, tags: dict[str, tuple[int, i
 
 
 def test_run_sample_phased_splits_cleanly_phased_gene_by_real_haplotype(tmp_path):
-    """GENE1's reads are cleanly split HP=1/HP=2 under one PS block: the
-    phased path should replace its unphased calls with two per-haplotype
-    calls labelled by the real HP value. CALIB1 carries no phase tags at
-    all, so it must fall back to the ordinary unphased path untouched --
-    exercising both routings in the same run, per the user's request that
-    the two are clearly distinguishable."""
+    """GENE1 (clean HP split, one PS) gets two calls labelled by HP; CALIB1
+    (untagged) falls back to the unphased path."""
     rng = random.Random(123)
     allele_a = _random_seq(700, rng)
     allele_b = _mutate(allele_a, 5, random.Random(1))
@@ -1001,10 +877,8 @@ def test_run_sample_phased_conflicting_ps_blocks_falls_back(tmp_path):
 
 
 def test_run_sample_phased_low_tagged_fraction_falls_back(tmp_path):
-    """Real HG00097 finding (2026-08-27): a gene can have HP-tagged reads
-    that agree on one PS block, yet still be unsafe to phase if only a
-    small minority of its recruited reads are actually tagged (HLA-C: 11 of
-    72). min_phased_tagged_fraction (default 0.5) gates on this directly."""
+    """HP tags in one PS block but too few reads tagged (HLA-C: 11/72) ->
+    unphased fallback via min_phased_tagged_fraction."""
     rng = random.Random(42)
     allele_a = _random_seq(700, rng)
     allele_b = _mutate(allele_a, 5, random.Random(43))
@@ -1051,10 +925,8 @@ def test_run_sample_phased_low_tagged_fraction_falls_back(tmp_path):
 
 
 def test_run_sample_phased_thin_haplotype_skipped_not_called(tmp_path):
-    """A haplotype with a nonzero but tiny tagged-read count (below
-    min_reads_per_haplotype) must not get a full Stage 2-5 call -- it should
-    be recorded as a failure, while a well-supported sibling haplotype for
-    the same gene still gets called normally."""
+    """A haplotype below min_reads_per_haplotype is a failure, while its
+    well-supported sibling is still called."""
     rng = random.Random(55)
     allele_a = _random_seq(700, rng)
     allele_b = _mutate(allele_a, 5, random.Random(56))
@@ -1075,10 +947,8 @@ def test_run_sample_phased_thin_haplotype_skipped_not_called(tmp_path):
         ],
     }))
 
-    # hap1: 10 well-supported reads. hap2: only 2 reads -- below the
-    # default min_reads_per_haplotype=3 floor. All tagged (fraction=1.0),
-    # so this exercises the per-haplotype floor specifically, not the
-    # gene-level tagged-fraction gate above.
+    # hap2 has 2 reads (< 3); all tagged, so only the per-haplotype floor
+    # applies.
     reads = [(f"a{i}", allele_a) for i in range(10)] + [(f"b{i}", allele_b) for i in range(2)]
     fastq_path = _write_fastq(tmp_path, reads)
     phase_tags = {f"a{i}": (1, 100) for i in range(10)}
@@ -1106,9 +976,7 @@ def test_run_sample_phased_thin_haplotype_skipped_not_called(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# _decide_phase_routing (DESIGN.md S10.3), factored out of the per-gene loop
-# and the C4A/C4B pseudo-gene check so the routing decision is unit-testable
-# without any real alignment work.
+# _decide_phase_routing
 # ---------------------------------------------------------------------------
 
 def _fake_read(read_id: str, gene: str = "GENE1") -> CandidateRead:
@@ -1186,9 +1054,7 @@ def _fake_routing(gene: str, routing: str, ps_values_seen: tuple[int, ...]) -> "
 
 
 # ---------------------------------------------------------------------------
-# DESIGN.md S10.5/S10.6: per-haplotype C4 CN's own PS-matched calibrator
-# panel (_c4_calibrator_reads_for_haplotype) -- pure-function tests, no
-# alignment needed.
+# _c4_calibrator_reads_for_haplotype
 # ---------------------------------------------------------------------------
 
 def test_c4_calibrator_reads_for_haplotype_matches_shared_ps_block():
@@ -1244,14 +1110,8 @@ def test_c4_calibrator_reads_for_haplotype_no_c4_ps_block_returns_empty():
 # ---------------------------------------------------------------------------
 
 def test_run_sample_phased_c4_routes_and_runs_form_classifiers(tmp_path):
-    """C4A/C4B reads that split cleanly by HP should route "phased" and get
-    real per-haplotype C4AbCall/C4FormLengthCall objects -- using this
-    file's TINY_C4_FASTA/META fixture, whose synthetic ipd_ids never match
-    a real resources/models/... models file entry, every read is correctly
-    "uninformative" for both classifiers (module docstring on
-    _write_c4_pool_files) -- this test checks the phased wiring runs to
-    completion and produces that expected shape, not the A/B signal itself
-    (already covered by stages/test_c4_form.py's classifier-level tests)."""
+    """C4 reads split by HP route "phased" and get per-haplotype form calls
+    (all uninformative with the synthetic pool); checks the wiring only."""
     rng = random.Random(9)
     allele_a = _random_seq(700, rng)
     allele_b = _mutate(allele_a, 5, random.Random(10))
@@ -1260,12 +1120,8 @@ def test_run_sample_phased_c4_routes_and_runs_form_classifiers(tmp_path):
         "GENE1*01:01:01:01": ("GENE1", allele_a),
         "GENE1*01:02:01:01": ("GENE1", allele_b),
     })
-    # A dedicated, longer local C4 pool -- NOT the shared module-level
-    # TINY_C4_FASTA/META (only 80bp): input/fastq.py's own docstring notes
-    # minimap2's -A1 -s350 scoring reports nothing below ~350bp of matched
-    # sequence, so an 80bp anchor/read pair never produces a real alignment
-    # through either the anchor sieve or assign.py's pool alignment. 500bp
-    # clears that floor.
+    # 500bp local C4 pool: minimap2 reports nothing under ~350bp with these
+    # scoring args, so the shared 80bp pool would never align.
     c4a_seq = _random_seq(500, random.Random(20))
     c4b_seq = _random_seq(500, random.Random(21))
     c4_pool_dir = tmp_path / "c4_pool_long"
@@ -1335,11 +1191,7 @@ def test_run_sample_phased_c4_routes_and_runs_form_classifiers(tmp_path):
 
 
 def test_run_sample_phased_c4_per_haplotype_cn_when_calibrator_shares_ps_block(tmp_path):
-    """DESIGN.md S10.5/S10.6, added 2026-08-28: when a class I calibrator
-    gene (CALIB1) is *also* cleanly phased under the identical PS block as
-    C4's own reads, its HP-split depth is trusted as C4's per-haplotype
-    calibrator panel and a real cn_estimate comes back for each haplotype
-    -- not just the sample-wide aggregate."""
+    """CALIB1 phased in C4's PS block -> per-haplotype C4 cn_estimate."""
     calib_a = _random_seq(700, random.Random(30))
     calib_b = _mutate(calib_a, 5, random.Random(31))
 
@@ -1415,11 +1267,8 @@ def test_run_sample_phased_c4_per_haplotype_cn_when_calibrator_shares_ps_block(t
 
 
 def test_run_sample_phased_c4_per_haplotype_cn_none_when_calibrator_ps_mismatched(tmp_path):
-    """DESIGN.md S10.3's stitching warning, made concrete: CALIB1 is
-    cleanly phased, but under a *different* PS block than C4's own --
-    its HP-split depth must not be borrowed as C4's calibrator panel.
-    cn_estimate comes back None (honest, invariant 4's "loud, not silent"),
-    while the real per-haplotype read depth is still reported."""
+    """CALIB1 phased in a different PS block -> per-haplotype cn_estimate
+    None, depth still reported."""
     calib_a = _random_seq(700, random.Random(40))
     calib_b = _mutate(calib_a, 5, random.Random(41))
 
@@ -1489,10 +1338,7 @@ def test_run_sample_phased_c4_per_haplotype_cn_none_when_calibrator_ps_mismatche
 
 
 def test_run_sample_phased_c4_falls_back_when_no_reads_recruited(tmp_path):
-    """Baseline: existing tests never add a C4A/C4B anchor at all, so no
-    read is ever recruited to C4 -- confirms the "C4" routing key still
-    appears (satisfying the "well annotated" requirement) even when there
-    is nothing to phase."""
+    """No C4 reads: "C4" still gets a routing entry."""
     rng = random.Random(11)
     allele_a = _random_seq(700, rng)
     allele_b = _mutate(allele_a, 5, random.Random(12))

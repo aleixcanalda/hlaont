@@ -1,32 +1,15 @@
 #!/usr/bin/env python3
-"""Stage per-gene candidate FASTAs for the anchor-set cd-hit-est rebuild, and
-emit the exact commands to run it (DESIGN.md S2a/S9).
+"""Stage per-gene candidate FASTAs for the cd-hit-est anchor rebuild and
+write the commands (DESIGN.md S2a/S9).
 
-Two asset classes, kept separate here on purpose:
+1. Target genes without ported anchors (all but A/B/C/DRB1/DQA1/DQB1):
+   genomic pool sequences, clustered at TARGET_IDENTITY so divergent
+   alleles still have a close anchor.
+2. Tier-4 decoys absent from the ported set: DRB2/DRB7 (one record each,
+   written straight through); DRB6/8/9 have none.
 
-1. New target genes -- the 30 v0 target genes (tier 1-3, template_polish)
-   NOT already covered as targets in FuFiHLA's ported 136-anchor set (the
-   original six: A, B, C, DRB1, DQA1, DQB1). These need dense, tight-threshold
-   clustering so a target gene's own divergent alleles can still find a close
-   anchor -- DESIGN.md's "too sparse to reliably recruit divergent alleles
-   once a gene becomes a target" critique of the 0.95 decoy threshold.
-   Sequences come from the already-built template pool (genomic only).
-
-2. New decoy genes -- tier-4 genes with IPD sequence but no entry at all in
-   the ported 136 set (DRB2, DRB7 have exactly one non-partial record each;
-   DRB6/DRB8/DRB9 have zero and are flagged unresolvable, not silently
-   dropped). These stay at cd-hit-est's original decoy role: soak up stray
-   reads, never typed. Single-sequence "clusters" don't need cd-hit at all,
-   so they are written straight through and excluded from run_cdhit.sh.
-
-The ported 136-anchor set itself (resources/anchors/vendor/136ref.fa.gz) is
-NOT touched or re-clustered -- DESIGN.md: re-deriving it "wastes weeks and
-yields something slightly different and worse."
-
-cd-hit-est isn't available on the login node here (module load only, and the
-login node shouldn't run CPU-heavy jobs). This script only prepares inputs
-and prints/writes the commands; run_cdhit.sh is meant to run in an
-interactive SLURM allocation, not here.
+The ported 136 anchors are not re-clustered. Run run_cdhit.sh on a compute
+node, not the login node.
 """
 from __future__ import annotations
 
@@ -52,10 +35,7 @@ CANDIDATES_DIR = STAGING / "candidates"       # -> cd-hit-est input, one gene pe
 SINGLETON_DIR = STAGING / "singletons"        # -> no clustering needed, copied straight through
 CLUSTERED_DIR = STAGING / "clustered"         # -> cd-hit-est output lands here
 
-# Tighter than FuFiHLA's 0.95 decoy threshold (DESIGN.md S2a/S9). Provisional:
-# no ONT/HiFi recruitment experiment has validated this value yet -- it is a
-# documented, versioned starting point for milestone 1/2 (DESIGN.md S6), not
-# a fitted constant. Revisit before trusting the read-recruitment numbers.
+# Tighter than FuFiHLA's 0.95 decoy threshold. Provisional (not validated).
 TARGET_IDENTITY = 0.98
 TARGET_WORD_SIZE = 10  # cd-hit-est: n=10-11 recommended for c in [0.95, 1.0]
 
@@ -63,11 +43,8 @@ FUFIHLA_PORTED_TARGETS = {"HLA-A", "HLA-B", "HLA-C", "HLA-DRB1", "HLA-DQA1", "HL
 
 
 def read_gzip_first_member_text(path: Path) -> str:
-    """FuFiHLA's 136ref.fa.gz has trailing bytes after the first gzip member
-    (upstream artifact -- content-length matches exactly, so it's not a
-    truncated download; GNU `gzip -t` tolerates it and warns, Python's gzip
-    module raises on it). Decompress only the first member and stop there.
-    """
+    """Decompress only the first gzip member (136ref.fa.gz has trailing
+    bytes that Python's gzip rejects)."""
     d = zlib.decompressobj(zlib.MAX_WBITS | 16)
     chunks = []
     with open(path, "rb") as fh:
@@ -127,17 +104,8 @@ def main() -> int:
     }
     new_targets = sorted(target_genes_v0 - FUFIHLA_PORTED_TARGETS)
 
-    # C4A/C4B (2026-08-25, DESIGN.md S2f): typing_module: structural, not
-    # template_polish -- no star-allele template pool exists for them at all,
-    # so their candidates can't come from POOL_FASTA the way every other
-    # target gene's do. genes.yaml's own anchor_source: c4_bundle field
-    # (data-driven, invariant 5 -- not a hardcoded "C4A"/"C4B" check) points
-    # at resources/templates/build_c4_bundle.py's separate real hla_seq/
-    # extraction instead. Same cd-hit-est clustering treatment either way --
-    # C4's own real diversity (362 distinct sequences before clustering,
-    # spanning both long/short form and the A/B split) is exactly the kind
-    # of redundancy this clustering step exists to collapse for every other
-    # target gene here.
+    # C4A/C4B (genes.yaml anchor_source: c4_bundle) take candidates from the
+    # C4 bundle instead of the template pool.
     c4_targets = sorted(
         g["gene"] for g in manifest
         if not g.get("excluded") and g.get("anchor_source") == "c4_bundle"

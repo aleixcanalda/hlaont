@@ -1,44 +1,23 @@
-# Stage 0 FASTQ anchor sieve parameters (DESIGN.md S3.2, development notes invariant 10:
-# model constants live here, never hardcoded in a stage module).
-#
-# Ported verbatim from FuFiHLA's share/fufihla/src/raw_reads_filter.py:
+# Stage 0 FASTQ anchor sieve parameters (DESIGN.md S3.2), ported from
+# FuFiHLA's raw_reads_filter.py (used unchanged by its HiFi and ONT
+# pipelines):
 #
 #   if coverage < 0.4 and ref_start > 200 and ref_end < ref_len - 200:
-#       continue                                    # drop the alignment
-#   ...
+#       continue
 #   valid = [aln for aln in alignments[read_id]
 #            if aln['score'] <= 10 * best_score and aln['gene'] in target_genes]
 #
-# Confirmed via github.com/jingqing-hu/FuFiHLA (2026-07-21): FuFiHLA.sh (HiFi)
-# and FuFiHLA_nano.sh (ONT) both call this exact script with no nano-specific
-# override -- FuFiHLA never re-derived these for nanopore either, so there is
-# nothing platform-specific to inherit. Per invariant 11, these three values
-# are provisional, ported unchanged, NOT validated for 15X ONT R10: at HiFi's
-# ~0.1-1% error rate a 10x-of-best mismatch-rate gap cleanly separates a true
-# hit from a paralog; at ONT R10's higher and noisier per-read error rate that
-# separation is far less clean. Re-derive against calib/ once real ONT R10
+# Provisional (invariant 11): not re-derived for 15X ONT R10.
 # HPRC/GIAB fixtures exist (tests/data/, not populated yet).
 
 version: 1
 source: >
   FuFiHLA share/fufihla/src/raw_reads_filter.py, ported unchanged. NOT
   re-derived for ONT R10 -- provisional, pending calib/ calibration.
-
-# Keep an alignment if it covers >= this fraction of the anchor's length...
-#
-# Lowered 0.4 -> 0.1, 2026-08-31/09-01 session, user-directed, real-data
-# finding: real HG00253 ONT data showed the sieve recruiting only 76 of 234
-# real reads truly overlapping the C4 locus at 0.4 (a 67% loss); removing
-# the bar entirely recruited 296 but the extra reads were overwhelmingly
-# short/low-information (median real match length 749bp against a 14-20kb
-# target, 55% under 1000bp). 0.1 is the user's own chosen middle ground
-# between the two, not independently fitted -- provisional (invariant 11),
-# same status as the 0.4 it replaces. Also motivated by real HLA-T
-# (classical gene cluster) sitting just under the CN rounding threshold in
-# HG00253 (raw estimate 0.95 vs the 1.25 bar) -- more real, if partial,
-# read recruitment was the identified lever there too. Applies globally
-# (this is Stage 0's one shared coverage parameter, not per-gene), so it
-# affects every gene's own recruitment, not just C4 or the pseudogene
+# Keep an alignment covering >= this fraction of the anchor...
+# Lowered from 0.4: at 0.4 only 76 of 234 C4-overlapping reads were kept
+# (HG00253); with no bar the extras were mostly short. Global; re-validate
+# the benchmark after changing.
 # cluster -- re-validate the full benchmark after any further change here.
 min_anchor_coverage: 0.1
 

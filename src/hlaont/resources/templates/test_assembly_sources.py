@@ -1,10 +1,6 @@
-"""Unit tests for assembly_sources.py's AssemblyGTFSource.
-
-Synthetic GTF+FASTA fixtures shaped like real hla_seq/ output (not the real
-232-sample dataset) -- covers forward/reverse strand, the real single-exon
-intronless HLA-N shape, the real partial/missing-leading-exon HLA-W shape,
-the GTF frame -> IPD codon_start conversion, dedup, and determinism.
-"""
+"""Unit tests for AssemblyGTFSource on synthetic hla_seq-shaped fixtures:
+strands, single-exon HLA-N, missing-leading-exon HLA-W, frame ->
+codon_start, dedup, determinism."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -127,10 +123,8 @@ def test_reverse_strand_extraction_revcomps_and_flips_coordinates(tmp_path: Path
     assert gm.exons[1] == (2, 61, 100)
     # single intron between exon 1 (ends at 40) and exon 2 (starts at 61)
     assert gm.introns == ((1, 41, 60),)
-    # codon_start is taken from the CDS segment with the lowest SHIFTED
-    # start (transcript order), which is exon_number 1's CDS (frame "0")
-    # even though it has the highest genomic coordinate on this - strand
-    # gene -> codon_start = frame + 1 = 0 + 1 = 1.
+    # codon_start comes from exon 1's CDS (frame 0) despite its highest
+    # coordinate on the - strand: 0 + 1 = 1.
     assert gm.codon_start == 1
 
 
@@ -292,10 +286,7 @@ def _write_bundle(tmp_path: Path, records) -> Path:
 
 
 def test_bundled_assembly_source_round_trips_a_written_bundle(tmp_path: Path) -> None:
-    # Reuse AssemblyGTFSource to produce a real TemplateRecord (with a real
-    # GeneModel), the same way build_assembly_bundle.py does, then confirm
-    # BundledAssemblySource reads back an equivalent record from what
-    # write_fasta_gz/write_meta_tsv_gz/write_gene_models_jsonl_gz wrote.
+    # Write a real AssemblyGTFSource record as a bundle and read it back.
     seq = _contig_seq(300, "fwd")
     contig = "SAMPLE1#1#ctg1"
     fasta_path = _write_fasta(tmp_path, {contig: seq})

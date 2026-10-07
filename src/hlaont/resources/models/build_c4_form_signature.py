@@ -1,39 +1,11 @@
 #!/usr/bin/env python3
-"""Fit resources/models/c4_form_signature.yaml from the real C4 bundle
-(resources/templates/assembly_bundle/c4.{fa,meta.tsv,models.jsonl}.gz) --
-DESIGN.md S2f's "own module" for C4A/C4B, Phase 2 (A vs B / long vs short
-form). Invariant 10: models are fitted offline and shipped as versioned
-parameter files, never hardcoded in a stage module.
+"""Fit resources/models/c4_form_signature.yaml from the C4 bundle
+(invariant 10).
 
-**Why this can be data-derived at all, not literature-guessed.** DESIGN.md
-S2f names Immuannot's real approach: A vs B by key exon 26 peptides, long vs
-short by intron 9 length. hla_seq/'s own GTFs already carry Immuannot's own
-A/B (C4AL/C4AS/C4BL/C4BS -> collapsed to C4A/C4B by build_c4_bundle.py) and
-long/short (the "form=" tag in each record's own description) calls for 362
-real per-haplotype sequences -- so the actual discriminating nucleotide
-positions and intron 9 length distinction can be *measured* directly from
-this project's own already-labelled real data, the same way every other
-fitted model in this directory is derived, rather than copied from a paper's
-stated genomic coordinates (which would also assume a specific reference
-build's numbering -- invariant 2's spirit, even though this isn't a `@SQ`
-coordinate in the literal sense).
-
-**Exon 26 signature.** For every real record with a gene_model exon
-numbered 26, extract that exon's own nucleotide substring (this sequence's
-own local coordinates, `resources/templates/sources.py`'s GeneModel).
-Records whose exon 26 isn't the modal length are excluded (logged, not
-silently dropped) -- a length-changing indel there is a genuine rare-allele
-case this signature isn't trying to model. Position-wise majority vote
-gives a consensus sequence per gene bucket (A, B); positions where the two
-consensuses disagree are the discriminating positions a real read can be
-scored against.
-
-**Intron 9 length.** For every real record with a gene_model intron
-numbered 9 (the gap between exon 9 and exon 10), intron length grouped by
-the record's own real form label (long/short, from build_c4_bundle.py's
-description tag) gives the two length populations directly -- expected
-around DESIGN.md's cited ~6.4kb HERV-K separation, confirmed rather than
-assumed by printing both medians.
+Exon 26: per-position majority consensus for A and B records (modal-length
+exons only); positions where they differ are the discriminating positions.
+Intron 9: length distribution per long/short form label (expected ~6.4kb
+apart, the HERV-K insertion).
 
     python build_c4_form_signature.py
 """
@@ -62,9 +34,7 @@ _EXON26_NUMBER = 26
 _INTRON9_EXON_BEFORE = 9
 _FORM_RE = re.compile(r"^form=(long|short) \(")
 
-# Real, published C4A/C4B isotype-determining tetrapeptide (Yu 1991 et al.)
-# -- used *only* as a printed sanity check against the data-derived
-# consensus below, never as the source of truth for the shipped signature.
+# Published isotype peptide (Yu 1991): a printed sanity check only.
 _KNOWN_A_MOTIF = "PCPVLD"
 _KNOWN_B_MOTIF = "LSPVIH"
 
@@ -162,12 +132,7 @@ def _exon26_signature(rows: list[dict], sequences: dict[str, str], models: dict[
         for i in range(modal_length) if consensus_a[i] != consensus_b[i]
     ]
 
-    # Exon 26 doesn't necessarily start on a codon boundary (an internal
-    # exon inherits whatever frame the upstream exons left it in) -- this
-    # sanity check doesn't need the exact frame from the full CDS
-    # (informational only, never load-bearing), so it just tries all 3 and
-    # reports whichever one turns up the published motif, rather than
-    # assuming frame 0 and silently failing a real match on a frame error.
+    # Exon 26's reading frame is unknown here; try all three.
     found_frame = None
     for frame in (0, 1, 2):
         pa, pb = _translate(consensus_a[frame:]), _translate(consensus_b[frame:])

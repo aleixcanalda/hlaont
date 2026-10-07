@@ -1,30 +1,15 @@
 #!/usr/bin/env python3
-"""Consolidate the anchor set (DESIGN.md S2a/S9) from three sources:
+"""Consolidate the anchor set (DESIGN.md S2a/S9) from:
 
-1. FuFiHLA's 136-anchor set, ported verbatim (resources/anchors/vendor/) --
-   never re-derived, per DESIGN.md: re-deriving it "wastes weeks and yields
-   something slightly different and worse." MIT-licensed; NOTICE below.
-2. cd-hit-est representatives for the 30 v0 target genes with no anchor
-   presence in the ported set (resources/anchors/build_staging/clustered/),
-   at a tighter identity threshold so a target gene's own divergent alleles
-   still find a close anchor (see prepare_candidates.py for the cd-hit run).
-   C4A/C4B (2026-08-25) are staged and clustered the same way, sourced from
-   resources/templates/assembly_bundle/c4.fa.gz instead of the IPD-driven
-   ref.gene.fa.gz -- see prepare_candidates.py's own docstring for why they
-   need a different candidate source than every other target gene here.
-3. Singleton decoys for tier-4 genes absent from the ported set but with
-   exactly one non-partial IPD record (DRB2, DRB7).
+1. FuFiHLA's 136 anchors, ported verbatim (resources/anchors/vendor/, MIT).
+2. cd-hit-est representatives for target genes without ported anchors,
+   including C4A/C4B from the C4 bundle (see prepare_candidates.py).
+3. Singleton decoys for tier-4 genes with one non-partial IPD record (DRB2,
+   DRB7).
 
-Role (target vs decoy) is assigned from resources/genes.yaml, never from
-which of the three sources a sequence came from (development notes invariant 5).
-`typing_module: structural` (C4A/C4B) counts as target here even though it
-never enters the star-allele template pool (build.py) -- DESIGN.md S2f's
-"Total C4 CN via depth ratio" needs these reads recruited by Stage 0's
-sieve, not filtered out as decoy the way a real off-target gene would be.
-
-Known gap, not silently dropped: HLA-DRB6/DRB8/DRB9 have zero non-partial
-IPD records and are absent from the ported set too -- no anchor exists for
-them.
+Role comes from resources/genes.yaml (invariant 5); structural genes (C4)
+are targets so Stage 0 recruits their reads. HLA-DRB6/8/9 have no anchor
+(no non-partial IPD record).
 """
 from __future__ import annotations
 
@@ -117,11 +102,7 @@ def main() -> int:
     for g in manifest:
         if g.get("excluded"):
             continue
-        # "target" = recruit this gene's reads, not just reject cross-mapped
-        # ones -- true for the star-allele template_polish genes and for
-        # typing_module: structural (C4A/C4B, module docstring above), which
-        # need real recruitment for depth-ratio CN despite having no template
-        # pool of their own.
+        # Targets: template_polish and structural (C4) genes.
         role_by_gene[g["gene"]] = (
             "target" if g.get("typing_module") in ("template_polish", "structural") else "decoy"
         )
@@ -142,10 +123,7 @@ def main() -> int:
             "source": source, "cluster_size": cluster_size_val, "sequence": seq,
         })
 
-    # 1. Ported FuFiHLA 136-anchor set, verbatim. cluster_size is genuinely
-    # unknown here -- FuFiHLA didn't ship .clstr files, so how many original
-    # alleles each representative speaks for was never recorded. None, not a
-    # guessed 1: a false "verified singleton" would misreport confidence.
+    # 1. Ported anchors; cluster_size unknown (no .clstr shipped), so None.
     n_ported = 0
     for header, seq in parse_fasta_text(read_gzip_first_member_text(VENDOR_FASTA)):
         add(header, "FuFiHLA-ported", None, seq)

@@ -12,10 +12,8 @@ from novelty import classify
 GENE = "GENE1"
 CALLED_ALLELE = "GENE1*01:01:01:01"
 
-# Synthetic 150bp gene: UTR1(1-30) exon1/cds(31-60) intron1(61-90)
-# exon2/cds(91-120) UTR2(121-150). CDS = "CTT"*20 (60bp, 20 Leu codons,
-# in-frame from codon_start=1) -- chosen because every CTx codon (T/C/A/G
-# 3rd base) is still Leu, giving an easy synonymous-substitution site.
+# Synthetic 150bp gene: UTR1 1-30, CDS exon1 31-60, intron 61-90, CDS exon2
+# 91-120, UTR2 121-150. CDS = "CTT"*20; any CTx codon is still Leu.
 _UTR1 = "A" * 30
 _EXON1 = "CTT" * 10          # pos 31-60
 _INTRON1 = "GT" + "C" * 26 + "AG"  # pos 61-90, canonical-looking donor/acceptor
@@ -45,21 +43,13 @@ def _write_resources(tmp_path, cds_catalogue_rows=(), nearest_ipd_match=""):
 
     catalogue = tmp_path / "cds_catalogue.tsv.gz"
     with gzip.open(catalogue, "wt") as fh:
-        # `partial`/`exon_numbers` appended at the end (2026-09-20), not
-        # inserted alongside `genomic` the way build.py's real writer orders
-        # them -- deliberately, so every pre-existing 7-element row tuple
-        # here still lines up against its original 7 columns unchanged
-        # (csv.DictReader fills a short row's trailing fields with None,
-        # confirmed directly -- `partial` reads as None, not "True", for
-        # every one of them, same as if the column didn't exist at all).
+        # partial/exon_numbers appended last so 7-field rows still parse
+        # (DictReader fills missing fields with None).
         fh.write("gene\tipd_id\tallele\tgenomic\tfields\tcds_length\tcds_sequence\tpartial\texon_numbers\n")
         for row in cds_catalogue_rows:
             fh.write("\t".join(row) + "\n")
 
-    # nearest_ipd_match empty by default -- ordinary IPD-sourced allele
-    # shape (resources/templates/build.py's own convention), so
-    # display_allele falls back to called_allele and every pre-existing
-    # test's behaviour is unchanged.
+    # Empty nearest_ipd_match: ordinary IPD allele.
     meta = tmp_path / "meta.tsv.gz"
     with gzip.open(meta, "wt") as fh:
         fh.write("gene\tipd_id\tallele\tfields\tlength\tgenomic\tsource\tsource_version\tdescription\tnearest_ipd_match\n")
@@ -101,10 +91,7 @@ def test_novel_utr(tmp_path):
 
 
 def test_low_read_support_variant_filtered_to_exact(tmp_path):
-    """2026-09-13: a variant backed by <80% real read support (per
-    stages/consensus.py's ConsensusVariant.depth/dissent) must not count
-    toward the novelty taxonomy -- with it filtered out this is the same
-    zero-variant consensus as test_exact_match."""
+    """A variant with < 80% read support is ignored -> exact."""
     fasta, models, catalogue, meta = _write_resources(tmp_path)
     consensus = REF_SEQ[:9] + ("C" if REF_SEQ[9] != "C" else "G") + REF_SEQ[10:]
     weak = (ConsensusVariant(
@@ -246,10 +233,7 @@ def test_nearest_ipd_match_used_for_display_name_when_exact(tmp_path):
 
 
 def test_nearest_ipd_match_already_new_becomes_novel_extraction(tmp_path):
-    """Immuannot's own guess is itself `:new`-tagged (no real IPD catalog
-    hit at all) -- a zero-variant diff against our own extracted reference
-    must not be reported as plain `exact` (would claim a catalogued match
-    that doesn't exist), so it gets the dedicated `novel:extraction` tag."""
+    """Nearest match already `:new` + zero variants -> novel:extraction."""
     fasta, models, catalogue, meta = _write_resources(
         tmp_path, nearest_ipd_match="GENE1*01:01:01:new",
     )
@@ -261,12 +245,9 @@ def test_nearest_ipd_match_already_new_becomes_novel_extraction(tmp_path):
 
 
 def test_partial_extension_match_when_all_cds_variants_covered_and_exact(tmp_path):
-    """2026-09-20, real HG03009/HLA-C*07:457 case, user-specified gate: a
-    nonsynonymous variant confined entirely to exon 2 (91-120), with a
-    partial IPD record covering exactly exon 2 whose own sequence exactly
-    reproduces the edited region -- must be reported as `extension:partial`,
-    named to only the partial record's own known fields, `:new` beyond
-    that. called_allele (the "template") is unchanged either way."""
+    """Nonsynonymous variant inside exon 2, matched exactly by an exon-2-only
+    partial record -> extension:partial named to the partial's fields;
+    called_allele unchanged."""
     pos0 = 90  # 0-based index for 1-based pos 91 -- 1st base of exon2's first codon
     assert REF_SEQ[pos0] == "C"
     consensus = REF_SEQ[:pos0] + "A" + REF_SEQ[pos0 + 1:]  # CTT -> ATT, Leu -> Ile
@@ -284,11 +265,8 @@ def test_partial_extension_match_when_all_cds_variants_covered_and_exact(tmp_pat
 
 
 def test_partial_extension_match_skipped_when_variant_outside_covered_exon(tmp_path):
-    """Same partial record (exon 2 only) as above, but the consensus *also*
-    differs in exon 1 -- a real difference the partial record says nothing
-    about. The gate must refuse to fire (a real leftover difference outside
-    its own coverage), leaving the ordinary novel:nonsynonymous taxonomy
-    and the same called_allele untouched."""
+    """An extra exon-1 difference outside the partial's coverage -> stays
+    novel:nonsynonymous."""
     exon1_pos0 = 30  # same edit as test_novel_nonsynonymous
     exon2_pos0 = 90
     consensus = (
@@ -307,12 +285,8 @@ def test_partial_extension_match_skipped_when_variant_outside_covered_exon(tmp_p
 
 
 def test_partial_extension_match_skipped_on_any_mismatch_in_covered_range(tmp_path):
-    """Same exon-2-only nonsynonymous variant as the positive case, but the
-    partial record's own sequence doesn't actually match the edited region
-    (a real mismatch, not just an incomplete one) -- "zero mismatch,
-    complete match, or leave the novel call and same template" means this
-    must not fire either, even though the partial record's coverage was
-    otherwise the right shape."""
+    """Partial record covers exon 2 but doesn't match the edit -> stays
+    novel."""
     pos0 = 90
     consensus = REF_SEQ[:pos0] + "A" + REF_SEQ[pos0 + 1:]
     wrong_exon2 = "CTT" * 10  # the *unedited* exon 2 -- does not match consensus's real edit
@@ -327,18 +301,12 @@ def test_partial_extension_match_skipped_on_any_mismatch_in_covered_range(tmp_pa
 
 
 def test_partial_records_ignored_by_plain_extension_lookup(tmp_path):
-    """load_cds_catalogue_for_gene() (the pre-existing exact-full-CDS
-    extension tier) must never see a partial=True row, even though a
-    length mismatch would already make a collision practically impossible
-    -- defensive, keeps that tier's behaviour byte-for-byte what it was
-    before partial rows existed in the catalogue at all."""
+    """load_cds_catalogue_for_gene() ignores partial rows."""
     pos0 = 90
     consensus = REF_SEQ[:pos0] + "A" + REF_SEQ[pos0 + 1:]
     edited_exon2 = "ATT" + "CTT" * 9
-    # A mischievous partial row whose cds_sequence happens to equal the
-    # *full* edited CDS (not just the exon-2 fragment) -- if
-    # load_cds_catalogue_for_gene() didn't filter partial=True rows, this
-    # would wrongly trigger plain `extension` instead of `extension:partial`.
+    # A partial row equal to the full edited CDS: would trigger plain
+    # `extension` if not filtered.
     full_alt_cds = "CTT" * 10 + edited_exon2
     rows = [(GENE, "PARTIAL1", "GENE1*01:77", "False", "2", str(len(full_alt_cds)),
               full_alt_cds, "True", "1,2")]
