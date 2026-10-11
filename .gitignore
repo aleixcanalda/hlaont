@@ -1,5 +1,8 @@
 # Build artifacts — regenerated deterministically by `hlaont update-db`
 # (src/hlaont/resources/templates/build.py).
+.debug/
+development notes
+DESIGN.md
 src/hlaont/resources/templates/raw/
 src/hlaont/resources/templates/pool/
 src/hlaont/resources/templates/pool.bak*/
