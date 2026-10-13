@@ -102,33 +102,22 @@ def _add_run_subparser(subparsers: argparse._SubParsersAction) -> None:
     ap.add_argument("-t","--n-threads", type=int, default=4, help="minimap2/samtools resource knob, not a biological parameter")
     ap.add_argument("--minimap2-bin", default="minimap2")
     ap.add_argument("--dorado-version", default=None, help="Recorded in qc.json only -- not read from the FASTQ itself")
-    ap.add_argument("--reference-build-md5", default=None, help="Recorded in qc.json only -- not derived from --reference itself")
     ap.add_argument(
         "--bam", type=str, default=None,
-        help="Aligned BAM/CRAM (DESIGN.md S3.1 Stage 0 extraction path), an alternative to the FASTQ "
-             "positional. Requires --reference for a .cram input (CRAM cannot decode without it); "
+        help="Aligned BAM/CRAM. Requires --reference for a .cram input; "
              "optional for a plain .bam. Indexed input required (.bai/.crai). May be an http(s):// "
-             "URL (e.g. a public S3 object) instead of a local path -- samtools/htslib range-request "
-             "the needed regions directly, no local download of the full file. Kept as a plain str "
-             "(not argparse's Path) specifically so a URL's '//' survives -- Path() silently collapses "
-             "it to a single '/', corrupting the scheme (2026-09-06, real need: a 214GB public "
-             "1000g-ont R9 BAM with no local copy wanted, see is_remote_bam() below).",
-    )
+             "URL instead of a local path."
+             )
     ap.add_argument(
         "--reference", type=Path, default=None,
-        help="Reference FASTA matching --bam's alignment -- required for a .cram input (CRAM cannot "
-             "decode without it), optional for a plain .bam (its records already carry their own "
-             "sequences; not needed just to derive the region set from the header either)",
+        help="Reference FASTA matching --bam/cram's alignment",
     )
-    ap.add_argument("--samtools-bin", default="samtools", help="Stage 0 mini-BAM extraction/conversion binary (--bam only), and the CN samtools-depth binary (stages/align_depth.py, every run)")
+    ap.add_argument("--samtools-bin", default="samtools", help="samtools binary")
     ap.add_argument(
         "--phased", action="store_true",
-        help="DESIGN.md S10: treat --bam's HP/PS tags as real read-backed phase and run the "
-             "per-haplotype pipeline (pipeline.run_sample_phased) instead of the unphased "
-             "combinatorial one. A gene whose reads don't cleanly split by HP under one PS block "
-             "falls back to the unphased path for that gene only -- see the sample's qc.json "
-             "'phasing' block for which genes went which way. Requires --bam -- the FASTQ path "
-             "carries no phase tags. User-asserted, not autodetected from the BAM.",
+        help="Treat --bam's HP/PS tags as real read-backed phase and run the "
+             "per-haplotype pipeline instead of the unphased. A gene whose reads don't cleanly split by HP under one PS block "
+             "falls back to the unphased path for that gene only. "
     )
     ap.add_argument("--pool-fasta", type=Path, default=None, help="Override resources/templates/pool/ref.gene.fa.gz (versioned resource, DESIGN.md S2d)")
     ap.add_argument("--pool-meta", type=Path, default=None, help="Override resources/templates/pool/ref.gene.meta.tsv.gz")
@@ -139,8 +128,6 @@ def _add_run_subparser(subparsers: argparse._SubParsersAction) -> None:
     ap.add_argument("--genes-yaml", type=Path, default=None, help="Override resources/genes.yaml")
     ap.add_argument("--anchors-path", type=Path, default=None, help="Override resources/anchors/anchors.fa.gz")
     ap.add_argument("--anchors-meta-path", type=Path, default=None, help="Override resources/anchors/anchors.meta.tsv.gz")
-    ap.add_argument("--chr17-control-fasta", type=Path, default=None, help="Override resources/controls/chr17_control.chm13v2.fa.gz (DESIGN.md S1 CN normalisation control, stages/chr17_control.py)")
-    ap.add_argument("--c4-flanked-fasta", type=Path, default=None, help="Override resources/controls/c4_flanked_forms.chm13v2.fa.gz (DESIGN.md S2f per-form C4 CN, stages/c4_chr17_cn.py)")
     ap.set_defaults(func=_run_command)
 
 
@@ -150,18 +137,13 @@ def _add_update_db_subparser(subparsers: argparse._SubParsersAction) -> None:
         help="Rebuild the template pool from IPD + real assembly-derived templates",
         description="Rebuilds resources/templates/pool/ from a pinned/fresh IPD-IMGT/HLA "
                      "tag, merged with real assembly-derived templates for HLA-N/P/T/U/W/Y/R "
-                     "(resources/templates/assembly_sources.py) -- --hla-seq-dir is required "
-                     "here so that coverage can never be silently dropped.",
+                     "(resources/templates/assembly_sources.py).",
     )
     ap.add_argument(
         "--hla-seq-dir", type=Path, default=None,
-        help="Real per-individual phased assemblies (232 samples / 461 haplotypes) used to "
+        help="Real per-individual phased assemblies used to "
              "extract templates for genes.yaml's assembly_extraction genes (HLA-N/P/T/U/W/Y/R) "
-             "via a fresh parse. Optional: omit to use the checked-in assembly_bundle/ snapshot "
-             "of the same extraction instead, so this external dataset is never required just "
-             "to get these seven genes -- pass this only to regenerate from a newer/larger "
-             "hla_seq/ (see resources/templates/build_assembly_bundle.py to update the bundle "
-             "afterwards).",
+             "via a fresh parse. "
     )
     ap.add_argument("--assembly-bundle-dir", type=Path, default=None,
                      help="Override resources/templates/assembly_bundle (used for HLA-N/P/T/U/W/Y/R "
@@ -227,11 +209,7 @@ def _add_update_anchors_subparser(subparsers: argparse._SubParsersAction) -> Non
         description="Companion to update-db: reruns resources/anchors/prepare_candidates.py "
                      "to stage per-gene candidate FASTAs against the current template pool, "
                      "runs cd-hit-est on them, then resources/anchors/build.py to consolidate "
-                     "the result into anchors.fa.gz -- all in one command instead of the "
-                     "prior by-hand sequence. cd-hit-est is a CPU-heavy clustering step, so "
-                     "this command checks whether cd-hit-est is already callable and exits "
-                     "with install instructions if it is not, rather than silently skipping "
-                     "the rebuild.",
+                     "the result into anchors.fa.gz. "
     )
     ap.set_defaults(func=_update_anchors_command)
 
@@ -253,8 +231,8 @@ def _update_anchors_command(args: argparse.Namespace) -> int:
         print(
             "[hlaont] update-anchors: ERROR: cd-hit-est not found on PATH.\n"
             "  Install it (e.g. `conda install -c bioconda cd-hit`, a package\n"
-            "  manager of your choice, or your cluster's module system -- e.g.\n"
-            "  `module load cd-hit`), make sure it's on PATH, then re-run:\n"
+            "  manager of your choice, or your cluster's module system,\n"
+            "  make sure it's on PATH, then re-run:\n"
             "    hlaont update-anchors\n",
             file=sys.stderr,
         )

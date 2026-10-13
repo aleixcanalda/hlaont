@@ -21,23 +21,7 @@
 
 manifest_version: 1
 source:
-  - DESIGN.md S2c (gene manifest, tiers)
-  - DESIGN.md S1 (CN model, calibrator panel)
-  - DESIGN.md S2f (C4A/C4B, RCCX module)
   - ipd_audit_v3.65.0.txt (audit_genomic_v3.65.0 counts)
-
-cn_policy:
-  note: >
-    CN is estimated for every gene, every run, regardless of cn_model (DESIGN S1:
-    CN is a second readout of the read x allele assignment matrix, not a separate
-    stage gated by a per-gene switch). `cn_model` is an expected-pattern label for
-    CI width and QC thresholds, never a hardcoded assumption that skips estimation.
-    `diploid_typical` genes are not exempt from invariant 4 (a CN=0 call is guilty
-    until proven innocent): deletions occur in classical HLA genes too (e.g. HLA-A
-    exonic deletions), just less often than in the segmentally-duplicated
-    pseudogenes. Any CN deviating from a gene's typical/modal pattern requires
-    segment-level support or reference-space corroboration before being reported —
-    same bar as the tier 1 CN-variable pseudogenes, not a relaxed one.
 
 genes:
   # --- Tier 1: comfortable (20) ---
@@ -291,7 +275,6 @@ genes:
     tier: 2
     audit_genomic_v3.65.0: 13
 
-  # --- Tier 3: will mostly fail (9) ---
   - gene: HLA-K
     class: I
     segment: null
@@ -488,18 +471,6 @@ genes:
     calibrator: false
     typing_module: null
     tier: 4
-    audit_genomic_v3.65.0: 0
-
-  # --- Excluded ---
-  - gene: HLA-Cw
-    class: I
-    segment: null
-    cn_model: null
-    calibrator: false
-    typing_module: null
-    tier: null
-    excluded: true
-    excluded_reason: "Legacy alias for HLA-C, not a distinct gene; also a parser edge case (DESIGN S2c)."
     audit_genomic_v3.65.0: 0
 
   # --- Deferred module, not template-pool genes (DESIGN S2f) ---
