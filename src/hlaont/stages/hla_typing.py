@@ -13,7 +13,6 @@ frequency/LD prior would bias against rare/novel haplotypes, DESIGN.md S6).
 from __future__ import annotations
 
 import math
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
@@ -24,10 +23,9 @@ import yaml
 HERE = Path(__file__).parent
 REPO_ROOT = HERE.parent
 
-sys.path.insert(0, str(REPO_ROOT / "input"))
-from fastq import AnchorHit, CandidateRead  # noqa: E402
+from hlaont.input.fastq import AnchorHit, CandidateRead
 
-from assign import (  # noqa: E402
+from hlaont.stages.assign import (
     DEFAULT_POOL_FASTA,
     DEFAULT_POOL_META,
     AlignmentSpan,
@@ -36,9 +34,9 @@ from assign import (  # noqa: E402
     realign_to_candidates,
     subset_matrix_by_read_ids,
 )
-from consensus import HaplotypeConsensus  # noqa: E402
-from error_model import build_aligned_strings  # noqa: E402
-from genotype import (  # noqa: E402
+from hlaont.stages.consensus import HaplotypeConsensus
+from hlaont.stages.error_model import build_aligned_strings
+from hlaont.stages.genotype import (
     OntR10Config,
     candidate_alleles,
     context_log_likelihoods,

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from error_model import (
+from hlaont.stages.error_model import (
     KmerErrorModel,
     build_aligned_strings,
     context_log_likelihood,

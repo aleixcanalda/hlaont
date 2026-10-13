@@ -5,7 +5,7 @@
     hlaont run SAMPLE_ID --bam ALIGNED.bam --out-dir OUT/
     hlaont run SAMPLE_ID --bam ALIGNED.cram --reference REF.fa --out-dir OUT/
     hlaont run SAMPLE_ID --bam PHASED.bam --phased --out-dir OUT/
-    hlaont update-db [--hla-seq-dir HLA_SEQ_DIR]
+    hlaont update-db [--db-dir DB_DIR] [--hla-seq-dir HLA_SEQ_DIR]
     hlaont update-anchors
 
 run: types every gene in resources/genes.yaml and writes
@@ -20,49 +20,93 @@ update-db: rebuilds the template pool from IPD-IMGT/HLA plus
 assembly-derived templates for HLA-N/P/T/U/W/Y/R (from the bundled
 snapshot unless --hla-seq-dir is given).
 
+The template pool directory is --db-dir, else $HLAONT_DB, else
+resources/templates/pool/ inside the package; update-db writes it and run
+reads it, so build once and point every run at the same directory.
+
 update-anchors: rebuilds resources/anchors/anchors.fa.gz; needs cd-hit-est
 on PATH.
 """
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import shlex
 import shutil
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path, PurePosixPath
-from typing import Callable
 
 import pysam
 
-REPO_ROOT = Path(__file__).parent
-sys.path.insert(0, str(REPO_ROOT / "stages"))
-sys.path.insert(0, str(REPO_ROOT / "input"))
-
-from bam import extract_mini_bam, mini_bam_to_fastq  # noqa: E402
-from output import (  # noqa: E402
+from hlaont.input.bam import extract_mini_bam, mini_bam_to_fastq
+from hlaont.input.regions import RegionSet, derive_regions_from_header
+from hlaont.resources.anchors import build as anchors_build
+from hlaont.resources.anchors import prepare_candidates
+from hlaont.resources.templates import build as pool_build
+from hlaont.resources.templates.assembly_sources import HLA_SEQ_SNAPSHOT_VERSION
+from hlaont.stages.chr17_control import compute_chr17_control_depth_from_bam
+from hlaont.stages.output import (
     write_calls_tsv,
     write_consensus_fasta,
     write_qc_json,
     write_variants_vcf,
 )
-from chr17_control import compute_chr17_control_depth_from_bam  # noqa: E402
-from pipeline import run_sample, run_sample_phased  # noqa: E402
-from regions import RegionSet, derive_regions_from_header  # noqa: E402
+from hlaont.stages.pipeline import run_sample, run_sample_phased
+
+REPO_ROOT = Path(__file__).parent
+
 
 def is_remote_bam(bam: str) -> bool:
     """True for an http(s):// --bam value (a URL kept as plain str, see the
     --bam argparse help above) rather than a local path."""
-    return bam.startswith("http://") or bam.startswith("https://")
+    return bam.startswith(("http://", "https://"))
 
 
-BUILD_PY = REPO_ROOT / "resources" / "templates" / "build.py"
 ANCHORS_DIR = REPO_ROOT / "resources" / "anchors"
-PREPARE_CANDIDATES_PY = ANCHORS_DIR / "prepare_candidates.py"
-ANCHORS_BUILD_PY = ANCHORS_DIR / "build.py"
 CDHIT_SCRIPT = ANCHORS_DIR / "build_staging" / "run_cdhit.sh"
 CDHIT_CLUSTERED_DIR = ANCHORS_DIR / "build_staging" / "clustered"
+
+DEFAULT_DB_DIR = REPO_ROOT / "resources" / "templates" / "pool"
+DB_DIR_ENV_VAR = "HLAONT_DB"
+# run_sample() keyword -> file name inside the db dir (build.py's outputs).
+DB_FILES = {
+    "pool_fasta": "ref.gene.fa.gz",
+    "pool_meta": "ref.gene.meta.tsv.gz",
+    "models_path": "ref.gene.models.jsonl.gz",
+    "cds_catalogue_path": "ref.gene.cds_catalogue.tsv.gz",
+}
+
+
+def resolve_db_dir(db_dir: Path | None) -> Path:
+    """--db-dir, else $HLAONT_DB, else the in-package default."""
+    if db_dir is not None:
+        return db_dir
+    env = os.environ.get(DB_DIR_ENV_VAR)
+    return Path(env) if env else DEFAULT_DB_DIR
+
+
+def check_db_dir(db_dir: Path, keys: list[str]) -> None:
+    """Exit loudly unless `db_dir` holds the pool files for `keys` and a
+    manifest.json whose schema matches this hlaont version."""
+    hint = (f"Build one with `hlaont update-db --db-dir {db_dir}`, or point --db-dir / "
+            f"${DB_DIR_ENV_VAR} at an existing pool.")
+    missing = [DB_FILES[k] for k in keys if not (db_dir / DB_FILES[k]).exists()]
+    if missing:
+        sys.exit(f"[hlaont] ERROR: no template pool at {db_dir} (missing {', '.join(missing)}). {hint}")
+    manifest_path = db_dir / "manifest.json"
+    if not manifest_path.exists():
+        sys.exit(f"[hlaont] ERROR: {db_dir} has no manifest.json, so its pool schema can't be checked. {hint}")
+    found = json.loads(manifest_path.read_text()).get("pool_schema_version")
+    expected = pool_build.POOL_SCHEMA_VERSION
+    if found != expected:
+        sys.exit(
+            f"[hlaont] ERROR: pool at {db_dir} has schema version {found}, this hlaont expects "
+            f"{expected}. Rebuild it with `hlaont update-db --db-dir {db_dir}`."
+        )
 
 
 def _extract_bam_to_fastq(
@@ -119,15 +163,22 @@ def _add_run_subparser(subparsers: argparse._SubParsersAction) -> None:
              "per-haplotype pipeline instead of the unphased. A gene whose reads don't cleanly split by HP under one PS block "
              "falls back to the unphased path for that gene only. "
     )
-    ap.add_argument("--pool-fasta", type=Path, default=None, help="Override resources/templates/pool/ref.gene.fa.gz (versioned resource, DESIGN.md S2d)")
-    ap.add_argument("--pool-meta", type=Path, default=None, help="Override resources/templates/pool/ref.gene.meta.tsv.gz")
-    ap.add_argument("--models-path", type=Path, default=None, help="Override resources/templates/pool/ref.gene.models.jsonl.gz")
-    ap.add_argument("--cds-catalogue-path", type=Path, default=None, help="Override resources/templates/pool/ref.gene.cds_catalogue.tsv.gz")
+    ap.add_argument(
+        "--db-dir", type=Path, default=None,
+        help=f"Template pool directory built by `hlaont update-db` (default: ${DB_DIR_ENV_VAR}, "
+             "else resources/templates/pool/ inside the package)",
+    )
+    ap.add_argument("--pool-fasta", type=Path, default=None, help="Override --db-dir's ref.gene.fa.gz")
+    ap.add_argument("--pool-meta", type=Path, default=None, help="Override --db-dir's ref.gene.meta.tsv.gz")
+    ap.add_argument("--models-path", type=Path, default=None, help="Override --db-dir's ref.gene.models.jsonl.gz")
+    ap.add_argument("--cds-catalogue-path", type=Path, default=None, help="Override --db-dir's ref.gene.cds_catalogue.tsv.gz")
     ap.add_argument("--c4-pool-fasta", type=Path, default=None, help="Override resources/templates/assembly_bundle/c4.fa.gz (DESIGN.md S2f total-CN module)")
     ap.add_argument("--c4-pool-meta", type=Path, default=None, help="Override resources/templates/assembly_bundle/c4.meta.tsv.gz")
     ap.add_argument("--genes-yaml", type=Path, default=None, help="Override resources/genes.yaml")
     ap.add_argument("--anchors-path", type=Path, default=None, help="Override resources/anchors/anchors.fa.gz")
     ap.add_argument("--anchors-meta-path", type=Path, default=None, help="Override resources/anchors/anchors.meta.tsv.gz")
+    ap.add_argument("--chr17-control-fasta", type=Path, default=None, help="Override resources/controls/chr17_control.chm13v2.fa.gz")
+    ap.add_argument("--c4-flanked-fasta", type=Path, default=None, help="Override resources/controls/c4_flanked_forms.chm13v2.fa.gz")
     ap.set_defaults(func=_run_command)
 
 
@@ -150,7 +201,11 @@ def _add_update_db_subparser(subparsers: argparse._SubParsersAction) -> None:
                           "when --hla-seq-dir is not given)")
     ap.add_argument("--genes-yaml", type=Path, default=None, help="Override resources/genes.yaml")
     ap.add_argument("--raw-dir", type=Path, default=None, help="Override resources/templates/raw (IPD hla.dat cache)")
-    ap.add_argument("--out-dir", type=Path, default=None, help="Override resources/templates/pool")
+    ap.add_argument(
+        "--db-dir", "--out-dir", dest="db_dir", type=Path, default=None,
+        help=f"Where to write the pool (default: ${DB_DIR_ENV_VAR}, else resources/templates/pool/ "
+             "inside the package). --out-dir is the old name.",
+    )
     ap.add_argument("--ipd-tag", default=None, help="Pinned IMGTHLA git tag (default: build.py's own IPD_DEFAULT_TAG)")
     ap.add_argument("--ipd-dat", type=Path, default=None, help="Use a local hla.dat instead of downloading")
     ap.set_defaults(func=_update_db_command)
@@ -160,36 +215,38 @@ def _update_db_command(args: argparse.Namespace) -> int:
     if args.hla_seq_dir is not None and not args.hla_seq_dir.exists():
         sys.exit(f"[hlaont] ERROR: --hla-seq-dir {args.hla_seq_dir} does not exist")
 
-    cmd = [sys.executable, str(BUILD_PY)]
+    build_argv: list[str] = []
     if args.hla_seq_dir is not None:
-        cmd += ["--hla-seq-dir", str(args.hla_seq_dir)]
+        build_argv += ["--hla-seq-dir", str(args.hla_seq_dir)]
     if args.assembly_bundle_dir is not None:
-        cmd += ["--assembly-bundle-dir", str(args.assembly_bundle_dir)]
+        build_argv += ["--assembly-bundle-dir", str(args.assembly_bundle_dir)]
     if args.genes_yaml is not None:
-        cmd += ["--genes-yaml", str(args.genes_yaml)]
+        build_argv += ["--genes-yaml", str(args.genes_yaml)]
     if args.raw_dir is not None:
-        cmd += ["--raw-dir", str(args.raw_dir)]
-    if args.out_dir is not None:
-        cmd += ["--out-dir", str(args.out_dir)]
+        build_argv += ["--raw-dir", str(args.raw_dir)]
+    db_dir = resolve_db_dir(args.db_dir)
+    build_argv += ["--out-dir", str(db_dir)]
     if args.ipd_tag is not None:
-        cmd += ["--ipd-tag", args.ipd_tag]
+        build_argv += ["--ipd-tag", args.ipd_tag]
     if args.ipd_dat is not None:
-        cmd += ["--ipd-dat", str(args.ipd_dat)]
+        build_argv += ["--ipd-dat", str(args.ipd_dat)]
 
-    print(f"[hlaont] update-db: {' '.join(cmd)}", file=sys.stderr)
-    subprocess.run(cmd, check=True)
+    print(f"[hlaont] update-db: build {' '.join(build_argv)}", file=sys.stderr)
+    rc = pool_build.main(build_argv)
+    if rc:
+        return rc
 
     if args.hla_seq_dir is None:
         print(
             "\n[hlaont] update-db: --hla-seq-dir not given -- HLA-N/P/T/U/W/Y/R "
             "templates came from the checked-in assembly_bundle/ snapshot "
-            "(hla_seq-2025-03-v1), not a fresh extraction. Pass --hla-seq-dir "
+            f"({HLA_SEQ_SNAPSHOT_VERSION}), not a fresh extraction. Pass --hla-seq-dir "
             "if you have a newer/larger hla_seq/ to extract from instead.\n",
             file=sys.stderr,
         )
 
     print(
-        "\n[hlaont] update-db: pool rebuilt. This does NOT auto-run (human-gated):\n"
+        f"\n[hlaont] update-db: pool rebuilt in {db_dir}. This does NOT auto-run (human-gated):\n"
         "  1. Rebuild anchors so read recruitment matches the new pool:\n"
         "       hlaont update-anchors   # needs cd-hit-est installed\n"
         "     Confirm any gene that gained real templates this run drops out of\n"
@@ -211,6 +268,13 @@ def _add_update_anchors_subparser(subparsers: argparse._SubParsersAction) -> Non
                      "runs cd-hit-est on them, then resources/anchors/build.py to consolidate "
                      "the result into anchors.fa.gz. "
     )
+    ap.add_argument(
+        "--db-dir", type=Path, default=None,
+        help=f"Template pool to draw candidates from (default: ${DB_DIR_ENV_VAR}, else "
+             "resources/templates/pool/ inside the package)",
+    )
+    ap.add_argument("--raw-dir", type=Path, default=None,
+                    help="IPD hla.dat cache used by update-db (default: resources/templates/raw)")
     ap.set_defaults(func=_update_anchors_command)
 
 
@@ -238,14 +302,24 @@ def _update_anchors_command(args: argparse.Namespace) -> int:
         )
         return 1
 
-    print(f"[hlaont] update-anchors: staging candidates ({PREPARE_CANDIDATES_PY})", file=sys.stderr)
-    subprocess.run([sys.executable, str(PREPARE_CANDIDATES_PY)], check=True)
+    db_dir = resolve_db_dir(args.db_dir)
+    check_db_dir(db_dir, ["pool_fasta"])
+    prep_argv = ["--pool-fasta", str(db_dir / DB_FILES["pool_fasta"])]
+    if args.raw_dir is not None:
+        prep_argv += ["--raw-dir", str(args.raw_dir)]
+
+    print(f"[hlaont] update-anchors: staging candidates from {db_dir}", file=sys.stderr)
+    rc = prepare_candidates.main(prep_argv)
+    if rc:
+        return rc
 
     print(f"[hlaont] update-anchors: running cd-hit-est ({CDHIT_SCRIPT})", file=sys.stderr)
     _run_cdhit_commands(CDHIT_SCRIPT)
 
-    print(f"[hlaont] update-anchors: consolidating anchor set ({ANCHORS_BUILD_PY})", file=sys.stderr)
-    subprocess.run([sys.executable, str(ANCHORS_BUILD_PY)], check=True)
+    print("[hlaont] update-anchors: consolidating anchor set", file=sys.stderr)
+    rc = anchors_build.main()
+    if rc:
+        return rc
 
     print("\n[hlaont] update-anchors: anchors.fa.gz / anchors.meta.tsv.gz / "
           "anchors_manifest.json rebuilt. Check anchors_manifest.json's "
@@ -269,6 +343,14 @@ def _run_command(args: argparse.Namespace) -> int:
         sys.exit(f"[hlaont] ERROR: {args.bam} does not exist")
     if args.reference is not None and not args.reference.exists():
         sys.exit(f"[hlaont] ERROR: {args.reference} does not exist")
+
+    # Check the pool before the (slow) BAM extraction; per-file flags win
+    # over --db-dir, and a fully overridden pool skips the check.
+    db_dir = resolve_db_dir(args.db_dir)
+    pool_paths = {k: getattr(args, k) or db_dir / name for k, name in DB_FILES.items()}
+    from_db_dir = [k for k in DB_FILES if getattr(args, k) is None]
+    if from_db_dir:
+        check_db_dir(db_dir, from_db_dir)
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -301,13 +383,11 @@ def _run_command(args: argparse.Namespace) -> int:
     else:
         fastq_path = args.fastq
 
-    # Pass only given overrides so run_sample()'s defaults apply otherwise.
-    overrides = {
+    # Pool paths always come from the db dir; for the rest, pass only given
+    # overrides so run_sample()'s defaults apply otherwise.
+    overrides: dict = dict(pool_paths)
+    overrides.update({
         k: v for k, v in {
-            "pool_fasta": args.pool_fasta,
-            "pool_meta": args.pool_meta,
-            "models_path": args.models_path,
-            "cds_catalogue_path": args.cds_catalogue_path,
             "c4_pool_fasta": args.c4_pool_fasta,
             "c4_pool_meta": args.c4_pool_meta,
             "genes_yaml": args.genes_yaml,
@@ -316,7 +396,7 @@ def _run_command(args: argparse.Namespace) -> int:
             "chr17_control_fasta": args.chr17_control_fasta,
             "c4_flanked_fasta": args.c4_flanked_fasta,
         }.items() if v is not None
-    }
+    })
     if control_depth is not None:
         overrides["control_depth"] = control_depth
         overrides["control_n_reads"] = control_n_reads
@@ -337,18 +417,12 @@ def _run_command(args: argparse.Namespace) -> int:
 
     # Sample-prefixed outputs so one --out-dir can hold several samples.
     prefix = args.sample_id
-    calls_kwargs = {"pool_meta": overrides["pool_meta"]} if "pool_meta" in overrides else {}
-    write_calls_tsv(result, args.out_dir / f"{prefix}.calls.tsv", **calls_kwargs)
+    write_calls_tsv(result, args.out_dir / f"{prefix}.calls.tsv", pool_meta=pool_paths["pool_meta"])
     write_consensus_fasta(
         result, args.out_dir / f"{prefix}.consensus.fa", args.out_dir / f"{prefix}.consensus.qv.tsv"
     )
-    vcf_kwargs = {"pool_fasta": overrides["pool_fasta"]} if "pool_fasta" in overrides else {}
-    write_variants_vcf(result, args.out_dir / f"{prefix}.variants.vcf", **vcf_kwargs)
-    write_qc_json(
-        result, args.out_dir / f"{prefix}.qc.json",
-        dorado_version=args.dorado_version,
-        reference_build_md5=args.reference_build_md5,
-    )
+    write_variants_vcf(result, args.out_dir / f"{prefix}.variants.vcf", pool_fasta=pool_paths["pool_fasta"])
+    write_qc_json(result, args.out_dir / f"{prefix}.qc.json", dorado_version=args.dorado_version)
 
     n_genes = len({c.gene for c in result.haplotype_calls})
     print(

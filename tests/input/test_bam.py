@@ -1,14 +1,12 @@
 """Unit tests for Stage 0 mini-BAM extraction (DESIGN.md S3.1/S4 Stage 0)."""
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import pysam
 
-sys.path.insert(0, str(Path(__file__).parent))
-from bam import extract_mini_bam, mini_bam_to_fastq  # noqa: E402
-from regions import Region, RegionSet  # noqa: E402
+from hlaont.input.bam import extract_mini_bam, mini_bam_to_fastq
+from hlaont.input.regions import Region, RegionSet
 
 _CONTIGS = {"chr6": 1000, "chr6_alt": 500, "HLA-DECOY": 300, "chr1": 1000}
 

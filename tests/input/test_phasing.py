@@ -1,13 +1,11 @@
 """Unit tests for HP/PS phase-tag extraction (DESIGN.md S10.2)."""
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import pysam
 
-sys.path.insert(0, str(Path(__file__).parent))
-from phasing import ReadPhase, load_read_phase_tags  # noqa: E402
+from hlaont.input.phasing import ReadPhase, load_read_phase_tags
 
 _CONTIGS = {"chr6": 1000}
 

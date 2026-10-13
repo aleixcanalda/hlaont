@@ -21,21 +21,19 @@ from __future__ import annotations
 import csv
 import gzip
 import statistics
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
 
 import yaml
 
-from assign import GeneAssignmentMatrix, best_gene_per_read
+from hlaont.stages.assign import GeneAssignmentMatrix, best_gene_per_read
 
 HERE = Path(__file__).parent
 REPO_ROOT = HERE.parent
 DEFAULT_GENES_YAML = REPO_ROOT / "resources" / "genes.yaml"
 
-sys.path.insert(0, str(REPO_ROOT / "input"))
-from fastq import CandidateRead, DEFAULT_ANCHORS_META  # noqa: E402
+from hlaont.input.fastq import CandidateRead, DEFAULT_ANCHORS_META
 
 
 @dataclass(frozen=True)

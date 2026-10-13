@@ -1,11 +1,8 @@
 """Unit tests for @SQ header region-set derivation (DESIGN.md S3.2)."""
 from __future__ import annotations
 
-import sys
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
-from regions import derive_regions  # noqa: E402
+from hlaont.input.regions import derive_regions
 
 CHR6_LEN = 170805979
 CHM13_CHR6_LEN = 172126628

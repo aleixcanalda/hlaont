@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from sources import cds_exon_numbers, cds_nucleotide_sequence, parse_ipd_dat
+from hlaont.resources.templates.sources import cds_exon_numbers, cds_nucleotide_sequence, parse_ipd_dat
 
 _HEADER = """\
 ID   HLA99999; SV 1; standard; DNA; HUM; {length} BP.

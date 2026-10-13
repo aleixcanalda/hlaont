@@ -4,16 +4,13 @@ from __future__ import annotations
 import csv
 import json
 import random
-import sys
-from pathlib import Path
 
 import pysam
 
-import cli  # adds stages/ and input/ to sys.path as an import side effect
-from regions import RegionSet  # noqa: E402 -- cli's sys.path.insert makes this resolvable
+from hlaont import cli
+from hlaont.input.regions import RegionSet
 
-sys.path.insert(0, str(Path(__file__).parent / "stages"))
-from test_pipeline import (  # noqa: E402
+from tests.stages.test_pipeline import (
     C4_EXTRA_CALLS_TSV_GENES,
     TINY_C4_FASTA,
     TINY_C4_META,
@@ -373,6 +370,77 @@ def test_update_db_rebuilds_pool_end_to_end(tmp_path):
     assert exit_code == 0
     assert (out_dir / "manifest.json").exists()
     assert (out_dir / "ref.gene.fa.gz").exists()
+
+
+def test_update_db_writes_to_hlaont_db_env_dir(tmp_path, monkeypatch):
+    dat_path, genes_yaml, _hla_seq_dir = _write_update_db_fixture(tmp_path)
+    db_dir = tmp_path / "env_db"
+    monkeypatch.setenv(cli.DB_DIR_ENV_VAR, str(db_dir))
+
+    exit_code = cli.main([
+        "update-db",
+        "--genes-yaml", str(genes_yaml), "--raw-dir", str(tmp_path / "raw"),
+        "--ipd-dat", str(dat_path), "--assembly-bundle-dir", str(tmp_path / "no_such_bundle"),
+    ])
+    assert exit_code == 0
+    assert (db_dir / "manifest.json").exists()
+    assert (db_dir / "ref.gene.fa.gz").exists()
+
+
+def test_resolve_db_dir_precedence(tmp_path, monkeypatch):
+    monkeypatch.delenv(cli.DB_DIR_ENV_VAR, raising=False)
+    assert cli.resolve_db_dir(None) == cli.DEFAULT_DB_DIR
+    monkeypatch.setenv(cli.DB_DIR_ENV_VAR, str(tmp_path / "env"))
+    assert cli.resolve_db_dir(None) == tmp_path / "env"
+    assert cli.resolve_db_dir(tmp_path / "flag") == tmp_path / "flag"
+
+
+def _write_fake_db_dir(db_dir, schema_version):
+    db_dir.mkdir()
+    for name in cli.DB_FILES.values():
+        (db_dir / name).write_bytes(b"")
+    (db_dir / "manifest.json").write_text(json.dumps({"pool_schema_version": schema_version}))
+
+
+def test_check_db_dir_accepts_matching_pool(tmp_path):
+    _write_fake_db_dir(tmp_path / "db", cli.pool_build.POOL_SCHEMA_VERSION)
+    cli.check_db_dir(tmp_path / "db", list(cli.DB_FILES))  # no SystemExit
+
+
+def test_check_db_dir_errors_on_missing_file(tmp_path, capsys):
+    _write_fake_db_dir(tmp_path / "db", cli.pool_build.POOL_SCHEMA_VERSION)
+    (tmp_path / "db" / "ref.gene.models.jsonl.gz").unlink()
+    try:
+        cli.check_db_dir(tmp_path / "db", list(cli.DB_FILES))
+        raised = False
+    except SystemExit as e:
+        raised = True
+        assert "ref.gene.models.jsonl.gz" in str(e) and "update-db" in str(e)
+    assert raised
+
+
+def test_check_db_dir_errors_on_schema_mismatch(tmp_path):
+    _write_fake_db_dir(tmp_path / "db", cli.pool_build.POOL_SCHEMA_VERSION - 1)
+    try:
+        cli.check_db_dir(tmp_path / "db", list(cli.DB_FILES))
+        raised = False
+    except SystemExit as e:
+        raised = True
+        assert "schema version" in str(e)
+    assert raised
+
+
+def test_run_errors_on_empty_db_dir_before_doing_work(tmp_path):
+    fastq = tmp_path / "reads.fastq"
+    fastq.write_text("")
+    out_dir = tmp_path / "out"
+    try:
+        cli.main(["run", "s1", str(fastq), "--out-dir", str(out_dir), "--db-dir", str(tmp_path / "empty")])
+        raised = False
+    except SystemExit:
+        raised = True
+    assert raised
+    assert not out_dir.exists()
 
 
 def test_update_db_works_without_hla_seq_dir(tmp_path):

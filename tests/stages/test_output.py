@@ -8,11 +8,11 @@ import json
 import random
 
 import pysam
-from c4_form import C4AbCall, C4FormLengthCall, C4PerGeneCN
-from cn import GeneCN
-from output import write_calls_tsv, write_consensus_fasta, write_qc_json, write_variants_vcf
-from pipeline import GenePhaseRouting, HaplotypeCallResult, run_sample, run_sample_phased
-from test_pipeline import (
+from hlaont.stages.c4_form import C4AbCall, C4FormLengthCall, C4PerGeneCN
+from hlaont.stages.cn import GeneCN
+from hlaont.stages.output import write_calls_tsv, write_consensus_fasta, write_qc_json, write_variants_vcf
+from hlaont.stages.pipeline import GenePhaseRouting, HaplotypeCallResult, run_sample, run_sample_phased
+from tests.stages.test_pipeline import (
     C4_EXTRA_CALLS_TSV_GENES,
     TINY_C4_FASTA,
     TINY_C4_META,

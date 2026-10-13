@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import itertools
 import math
-import sys
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,7 +28,7 @@ import numpy as np
 import pysam
 import yaml
 
-from assign import DEFAULT_POOL_FASTA, GeneAssignmentMatrix, realign_to_candidates
+from hlaont.stages.assign import DEFAULT_POOL_FASTA, GeneAssignmentMatrix, realign_to_candidates
 
 HERE = Path(__file__).parent
 REPO_ROOT = HERE.parent
@@ -63,10 +62,9 @@ _MAX_CANDIDATES_PER_SIGNATURE = 2
 _ONT_MIN_READS_PER_HAPLOTYPE = 3
 _ONT_MIN_HAPLOTYPE_READ_RATIO = 0.0
 
-sys.path.insert(0, str(REPO_ROOT / "input"))
-from fastq import CandidateRead  # noqa: E402
+from hlaont.input.fastq import CandidateRead
 
-from error_model import KmerErrorModel, load_kmer_error_model, read_allele_log_likelihood  # noqa: E402
+from hlaont.stages.error_model import KmerErrorModel, load_kmer_error_model, read_allele_log_likelihood
 
 _EM_MAX_ITER = 100
 _EM_TOL = 1e-8

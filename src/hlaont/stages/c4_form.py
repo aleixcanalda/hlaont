@@ -26,9 +26,9 @@ from pathlib import Path
 import pysam
 import yaml
 
-from assign import AlignmentSpan, GeneAssignmentMatrix
-from cn import GeneCN
-from error_model import build_aligned_strings
+from hlaont.stages.assign import AlignmentSpan, GeneAssignmentMatrix
+from hlaont.stages.cn import GeneCN
+from hlaont.stages.error_model import build_aligned_strings
 
 HERE = Path(__file__).parent
 REPO_ROOT = HERE.parent

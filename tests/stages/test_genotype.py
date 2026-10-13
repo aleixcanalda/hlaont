@@ -4,16 +4,13 @@ from __future__ import annotations
 import gzip
 import math
 import random
-import sys
-from pathlib import Path
 
 import numpy as np
 import pytest
 import yaml
 
-sys.path.insert(0, str(Path(__file__).parent))
-from assign import GeneAssignmentMatrix, build_gene_matrices  # noqa: E402
-from genotype import (  # noqa: E402
+from hlaont.stages.assign import GeneAssignmentMatrix, build_gene_matrices
+from hlaont.stages.genotype import (
     _MIN_COMBOS_FOR_PARALLEL,
     ErrorModel,
     candidate_alleles,
@@ -27,8 +24,7 @@ from genotype import (  # noqa: E402
     select_template_set_ont_r10,
 )
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "input"))
-from fastq import AnchorHit, CandidateRead  # noqa: E402
+from hlaont.input.fastq import AnchorHit, CandidateRead
 
 _MODEL = ErrorModel(platform="test", edit_error_rate=0.01, unaligned_edit_rate=0.75)
 

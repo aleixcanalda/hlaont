@@ -11,7 +11,7 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-from align_depth import (
+from hlaont.stages.align_depth import (
     align_to_sorted_bam,
     filter_bam_by_min_aligned_length,
     first_contig_name,

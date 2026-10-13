@@ -9,7 +9,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from regions import Region, RegionSet
+from hlaont.input.regions import Region, RegionSet
 
 # Exclude secondary/supplementary so each read appears once, full length.
 _SAMTOOLS_FASTQ_EXCLUDE_FLAGS = 0x900

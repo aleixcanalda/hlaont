@@ -17,13 +17,12 @@ from pathlib import Path
 
 import yaml
 
-sys.path.insert(0, str(Path(__file__).parent))
-from assembly_sources import (  # noqa: E402
+from hlaont.resources.templates.assembly_sources import (
     DEFAULT_BUNDLE_DIR,
     AssemblyGTFSource,
     BundledAssemblySource,
 )
-from sources import (  # noqa: E402
+from hlaont.resources.templates.sources import (
     IPD_DEFAULT_TAG,
     IPDSource,
     TemplateRecord,

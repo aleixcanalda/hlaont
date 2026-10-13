@@ -3,17 +3,14 @@ minimap2."""
 from __future__ import annotations
 
 import gzip
-import sys
 from pathlib import Path
 
 import pytest
 import yaml
 
-sys.path.insert(0, str(Path(__file__).parent))
-from cn import estimate_cn, load_gene_manifest, stage0_depth_by_gene  # noqa: E402
+from hlaont.stages.cn import estimate_cn, load_gene_manifest, stage0_depth_by_gene
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "input"))
-from fastq import AnchorHit, CandidateRead  # noqa: E402
+from hlaont.input.fastq import AnchorHit, CandidateRead
 
 _MANIFEST = {
     "genes": [

@@ -8,8 +8,8 @@ from pathlib import Path
 import pysam
 import pytest
 
-from assembly_sources import AssemblyGTFSource, BundledAssemblySource
-from build import write_fasta_gz, write_gene_models_jsonl_gz, write_meta_tsv_gz
+from hlaont.resources.templates.assembly_sources import AssemblyGTFSource, BundledAssemblySource
+from hlaont.resources.templates.build import write_fasta_gz, write_gene_models_jsonl_gz, write_meta_tsv_gz
 
 _GTF_HEADER = "## format: gtf\n## date: 2025-01-01\n"
 

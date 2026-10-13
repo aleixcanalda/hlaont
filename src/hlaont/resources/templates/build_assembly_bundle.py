@@ -13,13 +13,12 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
-from assembly_sources import (  # noqa: E402
+from hlaont.resources.templates.assembly_sources import (
     HLA_SEQ_SNAPSHOT_VERSION,
     AssemblyGTFSource,
     DEFAULT_BUNDLE_DIR,
 )
-from build import (  # noqa: E402
+from hlaont.resources.templates.build import (
     load_assembly_extraction_genes,
     write_fasta_gz,
     write_gene_models_jsonl_gz,

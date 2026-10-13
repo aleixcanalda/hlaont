@@ -30,12 +30,16 @@ pip install -e .
 
 ### First-time setup
 
-The repo ships a small, pre-extracted resource bundle, but the full template pool and anchor set need to be built once before `hlaont run` will work:
+The package ships the anchor set, models and a pre-extracted assembly bundle, but the template pool is built from IPD-IMGT/HLA once before `hlaont run` will work:
 
 ```bash
-hlaont update-db         # builds resources/templates/pool/ from IPD-IMGT/HLA + the bundled assembly extractions
-hlaont update-anchors    # builds resources/anchors/anchors.fa.gz (needs cd-hit-est on PATH)
+hlaont update-db --db-dir hlaont_db/   # downloads IPD-IMGT/HLA and builds the pool into hlaont_db/
+hlaont run SAMPLE_ID reads.fastq --db-dir hlaont_db/ --out-dir OUT/
 ```
+
+`--db-dir` can also be set once with `export HLAONT_DB=hlaont_db/`; without either, the pool lives inside the installed package.
+
+`hlaont update-anchors --db-dir hlaont_db/` rebuilds the anchor set against a new pool (maintainers only; needs `cd-hit-est` on PATH).
 
 ## Usage
 
@@ -64,6 +68,6 @@ Run `hlaont run --help`, `hlaont update-db --help`, or `hlaont update-anchors --
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+hlaont's own code is MIT — see [LICENSE](LICENSE). The distributed package also contains Badread's error model (GPL-3.0-only), so the package as a whole is `MIT AND GPL-3.0-only`.
 
 `resources/anchors/vendor/` ports a 136-allele anchor set from [FuFiHLA](https://github.com/jingqing-hu/FuFiHLA) (MIT); `resources/models/vendor/` ports an ONT R10.4.1 error model from [Badread](https://github.com/rrwick/Badread) (GPLv3). See each `NOTICE.md`/license file for full attribution. If you use hlaont, please also cite FuFiHLA (`10.1093/bioinformatics/btag231`).

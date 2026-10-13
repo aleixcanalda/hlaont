@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pysam
 
-import build
-import build_assembly_bundle
+from hlaont.resources.templates import build
+from hlaont.resources.templates import build_assembly_bundle
 
 _HLA_DAT_HEADER = """\
 ID   HLA99999; SV 1; standard; DNA; HUM; {length} BP.

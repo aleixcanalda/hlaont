@@ -4,10 +4,10 @@ from __future__ import annotations
 import gzip
 import random
 
-from assign import build_gene_matrices
-from consensus import build_gene_consensus
-from fastq import AnchorHit, CandidateRead
-from genotype import select_template_set_ont_r10
+from hlaont.stages.assign import build_gene_matrices
+from hlaont.stages.consensus import build_gene_consensus
+from hlaont.input.fastq import AnchorHit, CandidateRead
+from hlaont.stages.genotype import select_template_set_ont_r10
 
 
 def _random_seq(n: int, rng: random.Random) -> str:

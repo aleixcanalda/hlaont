@@ -25,7 +25,6 @@ from __future__ import annotations
 import csv
 import gzip
 import json
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
@@ -33,13 +32,12 @@ from typing import Sequence
 HERE = Path(__file__).parent
 REPO_ROOT = HERE.parent
 
-sys.path.insert(0, str(REPO_ROOT / "input"))
 
-from assign import DEFAULT_POOL_FASTA, AlignmentSpan  # noqa: E402
-from consensus import ConsensusVariant  # noqa: E402
-from error_model import build_aligned_strings  # noqa: E402
-from genotype import load_allele_sequences  # noqa: E402
-from hla_typing import TypingCall  # noqa: E402
+from hlaont.stages.assign import DEFAULT_POOL_FASTA, AlignmentSpan
+from hlaont.stages.consensus import ConsensusVariant
+from hlaont.stages.error_model import build_aligned_strings
+from hlaont.stages.genotype import load_allele_sequences
+from hlaont.stages.hla_typing import TypingCall
 
 DEFAULT_POOL_MODELS = REPO_ROOT / "resources" / "templates" / "pool" / "ref.gene.models.jsonl.gz"
 DEFAULT_CDS_CATALOGUE = REPO_ROOT / "resources" / "templates" / "pool" / "ref.gene.cds_catalogue.tsv.gz"

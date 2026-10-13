@@ -4,8 +4,8 @@ from __future__ import annotations
 import gzip
 import random
 
-from consensus import HaplotypeConsensus
-from hla_typing import TypingParams, type_haplotype
+from hlaont.stages.consensus import HaplotypeConsensus
+from hlaont.stages.hla_typing import TypingParams, type_haplotype
 
 
 def _random_seq(n: int, rng: random.Random) -> str:

@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pysam
 
-import build_c4_bundle
+from hlaont.resources.templates import build_c4_bundle
 
 _GTF_HEADER = "## format: gtf\n"
 

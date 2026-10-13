@@ -22,8 +22,8 @@ import gzip
 import statistics
 from pathlib import Path
 
-from assign import DEFAULT_POOL_META, GeneAssignmentMatrix, best_gene_per_read
-from cn import DEFAULT_GENES_YAML, GeneCN, depth_by_gene, load_gene_manifest
+from hlaont.stages.assign import DEFAULT_POOL_META, GeneAssignmentMatrix, best_gene_per_read
+from hlaont.stages.cn import DEFAULT_GENES_YAML, GeneCN, depth_by_gene, load_gene_manifest
 
 HERE = Path(__file__).parent
 REPO_ROOT = HERE.parent

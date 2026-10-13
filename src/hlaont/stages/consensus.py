@@ -12,7 +12,6 @@ Per-base error is each read's aggregate mismatch rate against its template
 from __future__ import annotations
 
 import math
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
@@ -22,12 +21,11 @@ import numpy as np
 HERE = Path(__file__).parent
 REPO_ROOT = HERE.parent
 
-sys.path.insert(0, str(REPO_ROOT / "input"))
-from fastq import CandidateRead  # noqa: E402
+from hlaont.input.fastq import CandidateRead
 
-from assign import DEFAULT_POOL_FASTA, GeneAssignmentMatrix, realign_to_candidates  # noqa: E402
-from error_model import build_aligned_strings  # noqa: E402
-from genotype import (  # noqa: E402
+from hlaont.stages.assign import DEFAULT_POOL_FASTA, GeneAssignmentMatrix, realign_to_candidates
+from hlaont.stages.error_model import build_aligned_strings
+from hlaont.stages.genotype import (
     OntR10Config,
     TemplateCall,
     context_log_likelihoods,

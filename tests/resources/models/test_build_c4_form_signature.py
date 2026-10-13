@@ -6,7 +6,7 @@ import gzip
 import json
 from pathlib import Path
 
-import build_c4_form_signature as fitter
+from hlaont.resources.models import build_c4_form_signature as fitter
 
 
 def _write_bundle(

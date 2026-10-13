@@ -13,11 +13,11 @@ import pysam
 import pytest
 import yaml
 
-import pipeline
-from pipeline import run_sample, run_sample_phased
+from hlaont.stages import pipeline
+from hlaont.stages.pipeline import run_sample, run_sample_phased
 
-from fastq import AnchorHit, CandidateRead  # noqa: E402 -- pipeline's own sys.path.insert
-from phasing import ReadPhase  # noqa: E402
+from hlaont.input.fastq import AnchorHit, CandidateRead
+from hlaont.input.phasing import ReadPhase
 
 
 def _write_c4_pool_files(directory: Path) -> tuple[Path, Path]:

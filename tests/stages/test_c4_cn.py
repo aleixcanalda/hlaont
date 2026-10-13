@@ -4,16 +4,14 @@ S2f). Reuses stages/test_cn.py's manifest/fixture conventions.
 from __future__ import annotations
 
 import gzip
-import sys
 from pathlib import Path
 
 import numpy as np
 import pytest
 import yaml
 
-sys.path.insert(0, str(Path(__file__).parent))
-from assign import GeneAssignmentMatrix  # noqa: E402
-from c4_cn import c4_total_depth, calibrator_genes_for_c4, estimate_c4_cn  # noqa: E402
+from hlaont.stages.assign import GeneAssignmentMatrix
+from hlaont.stages.c4_cn import c4_total_depth, calibrator_genes_for_c4, estimate_c4_cn
 
 
 def _write_length_meta(path: Path, rows: list[tuple[str, int]]) -> Path:

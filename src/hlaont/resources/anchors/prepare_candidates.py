@@ -13,6 +13,7 @@ node, not the login node.
 """
 from __future__ import annotations
 
+import argparse
 import gzip
 import sys
 import zlib
@@ -20,14 +21,14 @@ from pathlib import Path
 
 import yaml
 
+from hlaont.resources.templates.sources import IPD_DEFAULT_TAG, IPDSource
+
 HERE = Path(__file__).parent
 REPO_ROOT = HERE.parent.parent
-sys.path.insert(0, str(REPO_ROOT / "resources" / "templates"))
-from sources import IPDSource  # noqa: E402
 
 GENES_YAML = REPO_ROOT / "resources" / "genes.yaml"
 POOL_FASTA = REPO_ROOT / "resources" / "templates" / "pool" / "ref.gene.fa.gz"
-RAW_DAT = REPO_ROOT / "resources" / "templates" / "raw" / "hla-v3.65.0-alpha.dat"
+RAW_DIR = REPO_ROOT / "resources" / "templates" / "raw"
 C4_BUNDLE_FASTA = REPO_ROOT / "resources" / "templates" / "assembly_bundle" / "c4.fa.gz"
 
 STAGING = HERE / "build_staging"
@@ -94,7 +95,12 @@ def write_fasta(path: Path, records: list[tuple[str, str]]) -> None:
                 fh.write(seq[i:i + 80] + "\n")
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--pool-fasta", type=Path, default=POOL_FASTA)
+    ap.add_argument("--raw-dir", type=Path, default=RAW_DIR, help="IPD hla.dat cache (update-db's --raw-dir)")
+    args = ap.parse_args(argv)
+
     manifest = load_manifest()
     by_gene_name = {g["gene"]: g for g in manifest}
 
@@ -116,7 +122,7 @@ def main() -> int:
     print(f"[anchors] {len(c4_targets)} C4 gene(s) need clustering from the "
           f"c4_bundle source: {c4_targets}", file=sys.stderr)
 
-    pool_by_gene = read_pool_fasta(POOL_FASTA)
+    pool_by_gene = read_pool_fasta(args.pool_fasta)
     c4_bundle_by_gene: dict[str, list[tuple[str, str]]] = {}
     if C4_BUNDLE_FASTA.exists():
         c4_bundle_by_gene = read_pool_fasta(C4_BUNDLE_FASTA)
@@ -162,8 +168,9 @@ def main() -> int:
           file=sys.stderr)
 
     if missing_decoys:
-        ipd = IPDSource(genomic_genes=set(missing_decoys), raw_dir=RAW_DAT.parent,
-                         dat_path=RAW_DAT, require_genomic=False)
+        raw_dat = args.raw_dir / f"hla-{IPD_DEFAULT_TAG}.dat"
+        ipd = IPDSource(genomic_genes=set(missing_decoys), raw_dir=args.raw_dir,
+                         dat_path=raw_dat, require_genomic=False)
         decoy_records: dict[str, list[tuple[str, str]]] = {}
         for rec in ipd.records():
             header = f">{rec.allele} {rec.ipd_id} {rec.source}:{rec.source_version} {rec.description} len={len(rec.sequence)}bp"

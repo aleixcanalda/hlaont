@@ -13,12 +13,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from c4_cn import C4_REPORTED_GENE
-from c4_form import C4AbCall, C4FormLengthCall, C4PerGeneCN
-from cn import GeneCN
-from genotype import load_allele_sequences
-from novelty import DEFAULT_POOL_META, NoveltyVariant, load_gtf_template_allele
-from pipeline import DEFAULT_POOL_FASTA, HaplotypeCallResult, SampleResult
+from hlaont.stages.c4_cn import C4_REPORTED_GENE
+from hlaont.stages.c4_form import C4AbCall, C4FormLengthCall, C4PerGeneCN
+from hlaont.stages.cn import GeneCN
+from hlaont.stages.genotype import load_allele_sequences
+from hlaont.stages.novelty import DEFAULT_POOL_META, NoveltyVariant, load_gtf_template_allele
+from hlaont.stages.pipeline import DEFAULT_POOL_FASTA, HaplotypeCallResult, SampleResult
 
 # calls.tsv excludes haplotype calls below this mean QV (e.g. DRB4 at 4
 # reads, QV 5, 37 variants); qc.json still lists them. Provisional.

@@ -4,10 +4,10 @@ from __future__ import annotations
 import gzip
 import json
 
-from assign import AlignmentSpan
-from consensus import ConsensusVariant
-from hla_typing import TypingCall
-from novelty import classify
+from hlaont.stages.assign import AlignmentSpan
+from hlaont.stages.consensus import ConsensusVariant
+from hlaont.stages.hla_typing import TypingCall
+from hlaont.stages.novelty import classify
 
 GENE = "GENE1"
 CALLED_ALLELE = "GENE1*01:01:01:01"

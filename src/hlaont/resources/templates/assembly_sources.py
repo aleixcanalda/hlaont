@@ -21,14 +21,12 @@ import gzip
 import hashlib
 import json
 import re
-import sys
 from pathlib import Path
 from typing import Iterator
 
 import pysam
 
-sys.path.insert(0, str(Path(__file__).parent))
-from sources import GeneModel, TemplateRecord  # noqa: E402
+from hlaont.resources.templates.sources import GeneModel, TemplateRecord
 
 # hla_seq/ has no release tag; pinned here. records() prefers the v2
 # re-annotation (*_HLA_v2.gtf.gz, which adds HLA-R) and falls back to

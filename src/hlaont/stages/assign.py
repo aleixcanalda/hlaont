@@ -12,7 +12,6 @@ from __future__ import annotations
 import csv
 import gzip
 import subprocess
-import sys
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -23,8 +22,7 @@ import numpy as np
 HERE = Path(__file__).parent
 REPO_ROOT = HERE.parent
 
-sys.path.insert(0, str(REPO_ROOT / "input"))
-from fastq import CandidateRead  # noqa: E402
+from hlaont.input.fastq import CandidateRead
 
 DEFAULT_POOL_FASTA = REPO_ROOT / "resources" / "templates" / "pool" / "ref.gene.fa.gz"
 DEFAULT_POOL_META = REPO_ROOT / "resources" / "templates" / "pool" / "ref.gene.meta.tsv.gz"

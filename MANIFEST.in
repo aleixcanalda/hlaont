@@ -1,0 +1,7 @@
+prune tests
+prune .debug
+prune src/hlaont/resources/templates/raw
+prune src/hlaont/resources/templates/pool
+prune src/hlaont/resources/anchors/build_staging
+exclude development notes DESIGN.md ipd_audit.py ipd_audit_v3.65.0.txt
+global-exclude test_*.py __pycache__ *.py[cod]

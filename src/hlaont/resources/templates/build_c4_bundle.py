@@ -18,9 +18,8 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
-from assembly_sources import HLA_SEQ_SNAPSHOT_VERSION, AssemblyGTFSource, DEFAULT_BUNDLE_DIR  # noqa: E402
-from build import write_fasta_gz, write_gene_models_jsonl_gz, write_meta_tsv_gz  # noqa: E402
+from hlaont.resources.templates.assembly_sources import HLA_SEQ_SNAPSHOT_VERSION, AssemblyGTFSource, DEFAULT_BUNDLE_DIR
+from hlaont.resources.templates.build import write_fasta_gz, write_gene_models_jsonl_gz, write_meta_tsv_gz
 
 # Real gene_name values in hla_seq/'s own GTFs (confirmed directly against
 # the real dataset, not guessed) -- long/short form x A/B.

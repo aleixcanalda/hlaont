@@ -34,8 +34,8 @@ from pathlib import Path
 import pysam
 import yaml
 
-from align_depth import align_to_sorted_bam, filter_bam_by_target_coverage, n_distinct_reads_over_region, sum_depth_over_region
-from chr17_control import CHR17_CONTROL_LENGTH, DEFAULT_CHR17_CONTROL_FASTA, compute_chr17_control_depth
+from hlaont.stages.align_depth import align_to_sorted_bam, filter_bam_by_target_coverage, n_distinct_reads_over_region, sum_depth_over_region
+from hlaont.stages.chr17_control import CHR17_CONTROL_LENGTH, DEFAULT_CHR17_CONTROL_FASTA, compute_chr17_control_depth
 
 HERE = Path(__file__).parent
 REPO_ROOT = HERE.parent

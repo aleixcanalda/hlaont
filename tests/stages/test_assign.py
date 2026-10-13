@@ -3,13 +3,11 @@ from __future__ import annotations
 
 import gzip
 import random
-import sys
 from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).parent))
-from assign import (  # noqa: E402
+from hlaont.stages.assign import (
     GeneAssignmentMatrix,
     build_gene_matrices,
     best_gene_per_read,
@@ -18,8 +16,7 @@ from assign import (  # noqa: E402
     subset_matrix_by_read_ids,
 )
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "input"))
-from fastq import AnchorHit, CandidateRead  # noqa: E402
+from hlaont.input.fastq import AnchorHit, CandidateRead
 
 # Synthetic pool: GENE1 has two close alleles; GENE2 is ~5% from GENE1*01:01,
 # close enough that GENE1 reads align to it (tests the gene restriction).

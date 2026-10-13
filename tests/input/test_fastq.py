@@ -3,11 +3,9 @@ from __future__ import annotations
 
 import gzip
 import random
-import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
-from fastq import SieveParams, SieveStats, sieve_fastq  # noqa: E402
+from hlaont.input.fastq import SieveParams, SieveStats, sieve_fastq
 
 # Small, well-separated synthetic anchor set: one target gene, one decoy
 # gene, deliberately different sequences (not real HLA data -- the sieve's

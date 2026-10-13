@@ -23,7 +23,6 @@ is caught per gene/haplotype and recorded; anything else propagates.
 """
 from __future__ import annotations
 
-import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Sequence
@@ -31,8 +30,7 @@ from typing import Callable, Sequence
 HERE = Path(__file__).parent
 REPO_ROOT = HERE.parent
 
-sys.path.insert(0, str(REPO_ROOT / "input"))
-from fastq import (  # noqa: E402
+from hlaont.input.fastq import (
     DEFAULT_ANCHORS,
     DEFAULT_ANCHORS_META,
     CandidateRead,
@@ -40,9 +38,9 @@ from fastq import (  # noqa: E402
     SieveStats,
     sieve_fastq,
 )
-from phasing import ReadPhase, load_read_phase_tags  # noqa: E402
+from hlaont.input.phasing import ReadPhase, load_read_phase_tags
 
-from assign import (  # noqa: E402
+from hlaont.stages.assign import (
     DEFAULT_POOL_FASTA,
     DEFAULT_POOL_META,
     GeneAssignmentMatrix,
@@ -53,18 +51,18 @@ from assign import (  # noqa: E402
     realign_to_candidates,
     subset_matrix_by_read_ids,
 )
-from cn import (  # noqa: E402
+from hlaont.stages.cn import (
     DEFAULT_GENES_YAML,
     GeneCN,
     GeneManifestEntry,
     estimate_cn,
     load_gene_manifest,
 )
-from chr17_control import (  # noqa: E402
+from hlaont.stages.chr17_control import (
     DEFAULT_CHR17_CONTROL_FASTA,
     compute_chr17_control_depth,
 )
-from c4_cn import (  # noqa: E402
+from hlaont.stages.c4_cn import (
     C4_GENES,
     C4_REPORTED_GENE,
     DEFAULT_C4_POOL_FASTA,
@@ -72,34 +70,34 @@ from c4_cn import (  # noqa: E402
     calibrator_genes_for_c4,
     estimate_c4_cn,
 )
-from c4_chr17_cn import (  # noqa: E402
+from hlaont.stages.c4_chr17_cn import (
     DEFAULT_C4_FLANKED_FASTA,
     C4Chr17ControlResult,
     C4JointCall,
     call_c4_forms_jointly,
     estimate_c4_cn_via_chr17_control,
 )
-from c4_form import (  # noqa: E402
+from hlaont.stages.c4_form import (
     C4AbCall,
     C4FormLengthCall,
     C4PerGeneCN,
     estimate_c4_form,
     estimate_c4_per_gene_cn,
 )
-from consensus import (  # noqa: E402
+from hlaont.stages.consensus import (
     HaplotypeConsensus,
     build_gene_consensus,
     build_phased_pair_consensus,
 )
-from genotype import (  # noqa: E402
+from hlaont.stages.genotype import (
     OntR10Config,
     TemplateCall,
     load_allele_sequences,
     load_ont_r10_config,
     select_template_set_ont_r10,
 )
-from hla_typing import TypingCall, TypingParams, type_haplotypes_batch  # noqa: E402
-from novelty import (  # noqa: E402
+from hlaont.stages.hla_typing import TypingCall, TypingParams, type_haplotypes_batch
+from hlaont.stages.novelty import (
     DEFAULT_CDS_CATALOGUE,
     DEFAULT_POOL_MODELS,
     NoveltyCall,

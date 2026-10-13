@@ -2,15 +2,12 @@
 on synthetic matrices."""
 from __future__ import annotations
 
-import sys
-from pathlib import Path
 
 import numpy as np
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parent))
-from assign import AlignmentSpan, GeneAssignmentMatrix  # noqa: E402
-from c4_form import (  # noqa: E402
+from hlaont.stages.assign import AlignmentSpan, GeneAssignmentMatrix
+from hlaont.stages.c4_form import (
     C4AbCall,
     C4AlleleAnnotation,
     C4ExonSignaturePosition,
@@ -19,7 +16,7 @@ from c4_form import (  # noqa: E402
     classify_long_vs_short,
     estimate_c4_per_gene_cn,
 )
-from cn import GeneCN  # noqa: E402
+from hlaont.stages.cn import GeneCN
 
 
 def _c4_gene_cn(cn_estimate: float | None, ci_low: float | None = None, ci_high: float | None = None) -> GeneCN:
