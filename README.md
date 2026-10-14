@@ -5,7 +5,7 @@ Confidence-aware, full-field HLA typing from Oxford Nanopore (ONT) R10 long read
 Hlaont does the following:
 
 - Types **41 HLA/MIC/TAP genes**.
-- Estimates **copy number per gene** rather than assuming diploidy at every locus.
+- Estimates **copy number per gene**; it can detect haploid instances.
 - Reports **C4A/C4B total copy number and long/short-form composition** (the complement C4 segmental duplication).
 - Flags **novel alleles** (`novel:intronic`, `novel:utr`, `novel:synonymous`, `novel:nonsynonymous`, `novel:null`, `extension`).
 - Accepts **FASTQ or BAM/CRAM** input, and can use real read-backed phase (`HP`/`PS` tags) when available.
