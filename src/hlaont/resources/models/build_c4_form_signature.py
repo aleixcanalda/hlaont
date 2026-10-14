@@ -224,8 +224,7 @@ def main(argv: list[str] | None = None) -> int:
         "source": (
             "Fitted from resources/templates/assembly_bundle/c4.{fa,meta.tsv,models.jsonl}.gz "
             "(build_c4_form_signature.py) -- real per-haplotype Immuannot A/B and long/short "
-            "form labels from hla_seq/, not literature coordinates. See DESIGN.md S2f and "
-            "the 2026-08-26 Phase 2 development notes."
+            "form labels from hla_seq/, not literature coordinates. See DESIGN.md S2f."
         ),
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "exon26": exon26,

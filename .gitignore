@@ -1,7 +1,6 @@
 # Build artifacts — regenerated deterministically by `hlaont update-db`
 # (src/hlaont/resources/templates/build.py).
 .debug/
-development notes
 DESIGN.md
 src/hlaont/resources/templates/raw/
 src/hlaont/resources/templates/pool/
@@ -23,7 +22,7 @@ build/
 dist/
 
 # Scratch debugging/diagnostic scripts and real-data run artifacts
-# (referenced throughout the development notes) -- not for GitHub.
+# -- not for GitHub.
 .debug/
 
 # Stray sequencing data indexes should never land in the source tree.

@@ -324,8 +324,7 @@ def test_write_calls_tsv_keeps_row_at_or_above_custom_threshold(tmp_path):
 
 def test_write_qc_json_reports_low_mean_qv_filtered_calls(tmp_path):
     """Never silently dropped: the row excluded from calls.tsv must still
-    be visible somewhere (development notes: "silent failure... is worse than a
-    crash")."""
+    be visible somewhere (silent failure is worse than a crash)."""
     result, _ = _run(tmp_path)
     noisy_call = _low_qv_call()
     result = dataclasses.replace(result, haplotype_calls=result.haplotype_calls + (noisy_call,))
