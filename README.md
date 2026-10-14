@@ -66,6 +66,9 @@ Each run writes, into `--out-dir`:
 
 Run `hlaont run --help`, `hlaont update-db --help`, or `hlaont update-anchors --help` for the full flag list.
 
+## Future additions
+* IPD-KIR database for KIR allele typing
+
 ## License
 
 hlaont's own code is MIT — see [LICENSE](LICENSE). The distributed package also contains Badread's error model (GPL-3.0-only), so the package as a whole is `MIT AND GPL-3.0-only`.
