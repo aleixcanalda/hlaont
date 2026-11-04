@@ -411,6 +411,67 @@ def test_run_sample_collapses_zero_read_haplotype_despite_high_lrt(tmp_path, mon
         assert hc.n_reads_assigned == 21  # all 21 real reads, once collapsed to the one dominant candidate
 
 
+def test_run_sample_requalify_drops_low_qv_haplotype_reads(tmp_path, monkeypatch):
+    """A haplotype whose consensus mean QV is below requalify_mean_qv (the
+    DRB1 paralog-slot shape) has its reads dropped and Stage 2-3 rerun on
+    the rest. allele_b's consensus QV is forced low to isolate the check;
+    with requalify off it is still called."""
+    rng = random.Random(4242)
+    allele_a = _random_seq(700, rng)
+    allele_b = _mutate(allele_a, 15, random.Random(3))
+    calib_a = _random_seq(700, random.Random(56))
+    calib_b = _mutate(calib_a, 5, random.Random(4))
+
+    pool_fasta, pool_meta, models_path, cds_catalogue = _write_pool(tmp_path, {
+        "GENE1*01:01:01:01": ("GENE1", allele_a),
+        "GENE1*01:02:01:01": ("GENE1", allele_b),
+        "CALIB1*01:01:01:01": ("CALIB1", calib_a),
+        "CALIB1*01:02:01:01": ("CALIB1", calib_b),
+    })
+    anchors_path, anchors_meta_path = _write_anchors(tmp_path, {
+        "GENE1-anchor": ("GENE1", allele_a),
+        "CALIB1-anchor": ("CALIB1", calib_a),
+    })
+    genes_yaml = _write_genes_yaml(tmp_path)
+    reads = (
+        [(f"a{i}", allele_a) for i in range(16)]
+        + [(f"b{i}", allele_b) for i in range(8)]
+        + [(f"ca{i}", calib_a) for i in range(10)]
+        + [(f"cb{i}", calib_b) for i in range(10)]
+    )
+    fastq_path = _write_fastq(tmp_path, reads)
+
+    real_build = pipeline.build_gene_consensus
+
+    def _low_qv_b(*args, **kwargs):
+        return tuple(
+            dataclasses.replace(h, qv=tuple(10 for _ in h.qv)) if h.template_allele == "GENE1*01:02:01:01" else h
+            for h in real_build(*args, **kwargs)
+        )
+
+    monkeypatch.setattr(pipeline, "build_gene_consensus", _low_qv_b)
+
+    def _gene1(requalify_mean_qv):
+        result = run_sample(
+            "sample_rq", fastq_path,
+            pool_fasta=pool_fasta, pool_meta=pool_meta, models_path=models_path,
+            cds_catalogue_path=cds_catalogue, genes_yaml=genes_yaml,
+            c4_pool_fasta=TINY_C4_FASTA, c4_pool_meta=TINY_C4_META, control_depth=_TEST_CONTROL_DEPTH,
+            compute_c4_chr17_control=False,
+            anchors_path=anchors_path, anchors_meta_path=anchors_meta_path,
+            requalify_mean_qv=requalify_mean_qv, n_threads=2,
+        )
+        return [hc for hc in result.haplotype_calls if hc.gene == "GENE1"]
+
+    off = _gene1(0.0)
+    assert {hc.called_allele for hc in off} == {"GENE1*01:01:01:01", "GENE1*01:02:01:01"}
+
+    on = _gene1(30.0)
+    assert len(on) == 2  # collapsed homozygote: one row per copy
+    assert {hc.called_allele for hc in on} == {"GENE1*01:01:01:01"}
+    assert all(hc.n_reads_assigned == 16 for hc in on)  # allele_b's 8 reads dropped
+
+
 def test_run_sample_collapses_low_ratio_haplotype_despite_high_lrt(tmp_path, monkeypatch):
     """A minor haplotype at exactly the absolute floor (3 reads) but 3/40 =
     0.075 < min_haplotype_read_ratio collapses. LRT forced high."""

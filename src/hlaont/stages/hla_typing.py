@@ -46,6 +46,7 @@ from hlaont.stages.genotype import (
 
 DEFAULT_TYPING_PARAMS = REPO_ROOT / "resources" / "models" / "stage4_typing.yaml"
 DEFAULT_POOL_MODELS = REPO_ROOT / "resources" / "templates" / "pool" / "ref.gene.models.jsonl.gz"
+DEFAULT_CDS_CATALOGUE = REPO_ROOT / "resources" / "templates" / "pool" / "ref.gene.cds_catalogue.tsv.gz"
 
 _MIN_P_WRONG = 1e-6
 _MAX_GQ = 60.0
@@ -164,13 +165,14 @@ def _diff_against_reference_lite(
 
 def _cds_weighted_mismatches(
     allele: str, consensus_seq: str, span: AlignmentSpan, allele_seq: str,
+    models_path: Path = DEFAULT_POOL_MODELS,
 ) -> float:
     """Mismatch count against `allele`, weighted by base length (like `nm`)
     with CDS bases weighted `_CDS_MISMATCH_WEIGHT`. With no CDS variant
     this equals nm, so per-block counting (which let one long STR insertion
     count as one mismatch) is avoided. Weight 1 everywhere if the allele has
     no gene model."""
-    gm = _load_gene_model_lite(allele)
+    gm = _load_gene_model_lite(allele, models_path)
     variants = _diff_against_reference_lite(allele_seq, consensus_seq, span)
     total = 0.0
     for v in variants:
@@ -178,6 +180,133 @@ def _cds_weighted_mismatches(
         weight = _CDS_MISMATCH_WEIGHT if (gm is not None and _locate_lite(v.pos, gm) == "cds") else 1.0
         total += base_len * weight
     return total
+
+
+# CDS-first naming. Whole-gene fit alone lets intron/UTR differences
+# between IPD records outweigh 1-3 coding ones, so the true allele's CDS
+# gets called novel:nonsynonymous against a wrong record. Instead fields
+# 1-3 come from an exact CDS match (else fields 1-2 from a full-length
+# protein match) and the whole-gene rule only picks among those records.
+# Offline on 1000G R10 (245 samples, 2-field): DRB1 0.894 -> 0.976, B
+# 0.963 -> 0.984, classical 5 0.966 -> 0.986.
+
+_CODON_TABLE = {
+    a + b + c: aa
+    for (a, b, c), aa in zip(
+        ((x, y, z) for x in "TCAG" for y in "TCAG" for z in "TCAG"),
+        "FFLLSSSSYY**CC*WLLLLPPPPHHQQRRRRIIIMTTTTNNKKSSRRVVVVAAAADDEEGGGG",
+    )
+}
+
+
+def _protein(cds: str) -> str:
+    """Translation up to, not including, the first stop."""
+    out = []
+    for i in range(0, len(cds) - 2, 3):
+        aa = _CODON_TABLE.get(cds[i:i + 3], "X")
+        if aa == "*":
+            break
+        out.append(aa)
+    return "".join(out)
+
+
+def _full_length(cds: str) -> bool:
+    """Ends in its only stop, so a frameshifted consensus can't match a
+    null allele's truncated protein."""
+    return len(cds) % 3 == 0 and len(_protein(cds)) == len(cds) // 3 - 1
+
+
+_CDS_INDEX_CACHE: dict[Path, dict[str, tuple[dict[str, frozenset[str]], dict[str, frozenset[str]]]]] = {}
+
+
+def _cds_naming_index(
+    gene: str, catalogue_path: Path,
+) -> tuple[dict[str, frozenset[str]], dict[str, frozenset[str]]]:
+    """(CDS -> alleles, full-length protein -> alleles) over `gene`'s
+    genomic records, parsed once per process. Exon-only records are not
+    naming targets: the catalogue is dense in rare exon-only alleles one
+    SNV from a common one, so a single consensus error would rename a
+    correct call (Stage 5's `extension` still reports them). Empty if the
+    catalogue doesn't exist."""
+    index = _CDS_INDEX_CACHE.get(catalogue_path)
+    if index is None:
+        import csv
+        import gzip
+
+        by_cds: dict[str, dict[str, set[str]]] = {}
+        by_protein: dict[str, dict[str, set[str]]] = {}
+        if catalogue_path.exists():
+            with gzip.open(catalogue_path, "rt") as fh:
+                for row in csv.DictReader(fh, delimiter="\t"):
+                    if row["genomic"] != "True" or row.get("partial") == "True":
+                        continue
+                    cds = row["cds_sequence"].upper()
+                    by_cds.setdefault(row["gene"], {}).setdefault(cds, set()).add(row["allele"])
+                    if _full_length(cds):
+                        by_protein.setdefault(row["gene"], {}).setdefault(_protein(cds), set()).add(row["allele"])
+        index = {
+            g: (
+                {k: frozenset(v) for k, v in by_cds.get(g, {}).items()},
+                {k: frozenset(v) for k, v in by_protein.get(g, {}).items()},
+            )
+            for g in set(by_cds) | set(by_protein)
+        }
+        _CDS_INDEX_CACHE[catalogue_path] = index
+    return index.get(gene, ({}, {}))
+
+
+def _consensus_cds(
+    allele: str, allele_seq: str, consensus_seq: str, span: AlignmentSpan, models_path: Path,
+) -> str | None:
+    """The consensus's CDS, lifted through its alignment to `allele`'s CDS
+    exons. None if `allele` has no gene model or the alignment doesn't span
+    its whole CDS. Same walk as novelty._edited_cds (keep in sync)."""
+    gm = _load_gene_model_lite(allele, models_path)
+    if gm is None or not gm.cds_exons:
+        return None
+    if span.ref_start > min(s for s, _ in gm.cds_exons) - 1 or span.ref_end < max(e for _, e in gm.cds_exons):
+        return None
+    aligned_ref, aligned_consensus = build_aligned_strings(
+        allele_seq, consensus_seq,
+        ref_start=span.ref_start, ref_end=span.ref_end,
+        read_start=span.read_start, read_end=span.read_end,
+        strand=span.strand, cigar=span.cigar,
+    )
+    out: list[str] = []
+    ref_pos = span.ref_start
+    last_in_cds = False
+    i, n = 0, len(aligned_ref)
+    while i < n:
+        r, q = aligned_ref[i], aligned_consensus[i]
+        if r != "-":
+            last_in_cds = any(s <= ref_pos + 1 <= e for s, e in gm.cds_exons)
+            if last_in_cds and q != "-":
+                out.append(q)
+            ref_pos += 1
+            i += 1
+        else:
+            j = i
+            while j < n and aligned_ref[j] == "-":
+                j += 1
+            if last_in_cds:
+                out.append(aligned_consensus[i:j])
+            i = j
+    return "".join(out).upper()
+
+
+def _cds_named_alleles(gene: str, cds: str | None, catalogue_path: Path) -> frozenset[str]:
+    """Genomic alleles whose CDS equals `cds`, else those whose full-length
+    protein equals its translation; empty if neither (keep the whole-gene
+    call)."""
+    if not cds:
+        return frozenset()
+    by_cds, by_protein = _cds_naming_index(gene, catalogue_path)
+    exact = by_cds.get(cds)
+    if exact:
+        return exact
+    if _full_length(cds):
+        return by_protein.get(_protein(cds), frozenset())
+    return frozenset()
 
 
 @dataclass(frozen=True)
@@ -221,14 +350,18 @@ def type_haplotype(
     params: TypingParams | None = None,
     extra_candidates: tuple[str, ...] = (),
     reads: Sequence[CandidateRead] | None = None,
+    models_path: Path = DEFAULT_POOL_MODELS,
+    cds_catalogue_path: Path = DEFAULT_CDS_CATALOGUE,
     n_threads: int = 4,
     minimap2_bin: str = "minimap2",
 ) -> TypingCall:
     """Type one Stage 3 consensus against its gene's full pool. Raises if the
     consensus aligns to no pool allele.
 
-    `called_allele` is chosen by CDS-weighted mismatch rate, then coverage
-    length on ties -- not argmax(posterior). The posterior's
+    `called_allele`: fields 1-3 from an exact CDS match among genomic
+    records (else 1-2 from a full-length protein match, else no
+    restriction), then CDS-weighted mismatch rate, then coverage length on
+    ties -- not argmax(posterior). The posterior's
     uncovered-length penalty makes a shorter but clean record (DRB1
     *15:01:01:03) lose to a longer one with real mismatches. `posterior`,
     `field_gq` and `ambiguity_set` still come from the context-model score.
@@ -258,6 +391,7 @@ def type_haplotype(
     return _type_haplotype_from_single_row_matrix(
         consensus, matrix, pool_fasta=pool_fasta, config=config, params=params,
         extra_candidates=extra_candidates, reads=reads,
+        models_path=models_path, cds_catalogue_path=cds_catalogue_path,
         n_threads=n_threads, minimap2_bin=minimap2_bin,
     )
 
@@ -304,11 +438,17 @@ def _type_haplotype_from_single_row_matrix(
     params: TypingParams,
     extra_candidates: tuple[str, ...] = (),
     reads: Sequence[CandidateRead] | None = None,
+    models_path: Path = DEFAULT_POOL_MODELS,
+    cds_catalogue_path: Path = DEFAULT_CDS_CATALOGUE,
     n_threads: int = 1,
     minimap2_bin: str = "minimap2",
 ) -> TypingCall:
     """Scoring body of `type_haplotype()` for a one-row matrix (row 0 is
     this consensus, so candidate_alleles() reflects only its own support).
+
+    `models_path` / `cds_catalogue_path`: the pool's gene models (CDS
+    weighting, CDS lift) and CDS catalogue (CDS-first naming); a missing
+    file disables what it feeds.
 
     `extra_candidates` (Stage 2's narrowed set): if the naive best candidate
     has nm > 0 and some extra candidate is missing from the whole-pool hits,
@@ -326,25 +466,67 @@ def _type_haplotype_from_single_row_matrix(
         for a in candidates
     )
 
-    missing = tuple(a for a in extra_candidates if a not in candidates)
-    if missing and naive_best_rate > 0.0:
-        all_candidates = tuple(sorted(set(candidates) | set(extra_candidates)))
-        allele_sequences_dense = load_allele_sequences(pool_fasta, all_candidates)
+    def _dense_realign(alleles: tuple[str, ...]) -> tuple[GeneAssignmentMatrix, str, tuple[str, ...]] | None:
         synthetic_read = CandidateRead(
             read_id=read_id, sequence=consensus.sequence, quality=None,
             hits=(AnchorHit(gene=consensus.gene, allele="__consensus__", coverage=1.0, mismatch_rate=0.0),),
         )
         dense = realign_to_candidates(
-            consensus.gene, [synthetic_read], allele_sequences_dense,
+            consensus.gene, [synthetic_read], load_allele_sequences(pool_fasta, alleles),
             n_threads=n_threads, minimap2_bin=minimap2_bin,
             min_secondary_ratio=_STAGE4_FALLBACK_MIN_SECONDARY_RATIO,
         )
         # No dense hit (seen on an R9 consensus): keep the whole-pool result.
         dense_candidates = candidate_alleles(dense) if dense.read_ids else ()
-        if dense_candidates:
-            matrix, read_id, candidates = dense, dense.read_ids[0], dense_candidates
+        return (dense, dense.read_ids[0], dense_candidates) if dense_candidates else None
 
-    allele_sequences = load_allele_sequences(pool_fasta, candidates)
+    missing = tuple(a for a in extra_candidates if a not in candidates)
+    if missing and naive_best_rate > 0.0:
+        realigned = _dense_realign(tuple(sorted(set(candidates) | set(extra_candidates))))
+        if realigned is not None:
+            matrix, read_id, candidates = realigned
+
+    keys: dict[str, tuple[int, int]] = {}
+
+    def _score(alleles: tuple[str, ...]) -> tuple[dict[str, str], dict[str, int]]:
+        """Rate/coverage tie-break keys for the current matrix."""
+        seqs = load_allele_sequences(pool_fasta, alleles)
+        cols = {a: i for i, a in enumerate(matrix.allele_ids)}
+        keys.clear()
+        for a in alleles:
+            j = cols[a]
+            span = matrix.spans[(0, j)]
+            rate = _cds_weighted_mismatches(
+                a, consensus.sequence, span, seqs[a], models_path,
+            ) / int(matrix.aln_block_len[0, j])
+            keys[a] = (round(rate / _MISMATCH_RATE_TIE_TOLERANCE), -(span.read_end - span.read_start))
+        return seqs, cols
+
+    allele_sequences, col_index = _score(candidates)
+    whole_gene_best = min(candidates, key=keys.__getitem__)
+
+    # CDS-first naming: fields 1-3 (or 1-2) from the consensus CDS, field 4
+    # by the rate/coverage rule among records sharing it. If none of them
+    # was among the whole-pool hits (minimap2's length bias), realign
+    # densely to them.
+    cds_named = _cds_named_alleles(
+        consensus.gene,
+        _consensus_cds(
+            whole_gene_best, allele_sequences[whole_gene_best], consensus.sequence,
+            matrix.spans[(0, col_index[whole_gene_best])], models_path,
+        ),
+        cds_catalogue_path,
+    )
+    naming_pool = tuple(c for c in candidates if c in cds_named)
+    if cds_named and not naming_pool:
+        realigned = _dense_realign(tuple(sorted(set(candidates) | cds_named)))
+        if realigned is not None:
+            matrix, read_id, candidates = realigned
+            allele_sequences, col_index = _score(candidates)
+            naming_pool = tuple(c for c in candidates if c in cds_named)
+    if not naming_pool:
+        naming_pool = candidates
+
     read_sequences = {read_id: consensus.sequence}
     ll = context_log_likelihoods(
         matrix, read_sequences, allele_sequences, candidates, config,
@@ -355,37 +537,21 @@ def _type_haplotype_from_single_row_matrix(
     unnorm = np.exp(log_probs - m)
     posterior = unnorm / unnorm.sum()
 
-    col_index = {a: i for i, a in enumerate(matrix.allele_ids)}
-
-    def _rate_and_coverage(allele: str) -> tuple[float, int]:
-        j = col_index[allele]
-        aln = int(matrix.aln_block_len[0, j])
-        span = matrix.spans[(0, j)]
-        weighted_mismatches = _cds_weighted_mismatches(
-            allele, consensus.sequence, span, allele_sequences[allele],
-        )
-        return weighted_mismatches / aln, span.read_end - span.read_start
-
-    def _tiebreak_key(i: int) -> tuple[int, int]:
-        rate, coverage = _rate_and_coverage(candidates[i])
-        return round(rate / _MISMATCH_RATE_TIE_TOLERANCE), -coverage
-
-    best_idx = min(range(len(candidates)), key=_tiebreak_key)
+    called_allele = min(naming_pool, key=keys.__getitem__)
 
     # Genuine rate/coverage tie (the consensus can't express a split vote,
     # e.g. TAP2 *03 vs *06): let the real assigned reads decide. Otherwise
     # keep the deterministic first candidate.
-    tied_idx = [i for i in range(len(candidates)) if _tiebreak_key(i) == _tiebreak_key(best_idx)]
-    if len(tied_idx) > 1 and reads is not None and consensus.assigned_read_ids:
-        tied_candidates = tuple(candidates[i] for i in tied_idx)
+    tied = tuple(c for c in naming_pool if keys[c] == keys[called_allele])
+    if len(tied) > 1 and reads is not None and consensus.assigned_read_ids:
         refined = _break_tie_by_real_reads(
-            consensus.gene, tied_candidates, reads, consensus.assigned_read_ids,
+            consensus.gene, tied, reads, consensus.assigned_read_ids,
             pool_fasta=pool_fasta, config=config, n_threads=n_threads, minimap2_bin=minimap2_bin,
         )
         if refined is not None:
-            best_idx = candidates.index(refined)
+            called_allele = refined
 
-    called_allele = candidates[best_idx]
+    best_idx = candidates.index(called_allele)
     best_ll = float(log_probs[best_idx])
 
     allele_col = col_index[called_allele]
@@ -434,6 +600,8 @@ def type_haplotypes_batch(
     params: TypingParams | None = None,
     extra_candidates_by_key: dict[str, tuple[str, ...]] | None = None,
     reads: Sequence[CandidateRead] | None = None,
+    models_path: Path = DEFAULT_POOL_MODELS,
+    cds_catalogue_path: Path = DEFAULT_CDS_CATALOGUE,
     n_threads: int = 4,
     minimap2_bin: str = "minimap2",
 ) -> tuple[dict[str, TypingCall], dict[str, str]]:
@@ -485,6 +653,7 @@ def type_haplotypes_batch(
             typing_calls[key] = _type_haplotype_from_single_row_matrix(
                 hap, row_matrix, pool_fasta=pool_fasta, config=config, params=params,
                 extra_candidates=extra_candidates_by_key.get(key, ()), reads=reads,
+                models_path=models_path, cds_catalogue_path=cds_catalogue_path,
                 n_threads=n_threads, minimap2_bin=minimap2_bin,
             )
         except ValueError as e:

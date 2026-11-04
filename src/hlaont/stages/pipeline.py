@@ -284,6 +284,10 @@ def _collapse_to_single_allele(call: TemplateCall) -> TemplateCall:
     )
 
 
+def _mean_qv(hap: HaplotypeConsensus) -> float:
+    return (sum(hap.qv) / len(hap.qv)) if hap.qv else 0.0
+
+
 def _build_haplotype_call_result(
     gene: str,
     h_idx: int,
@@ -293,7 +297,7 @@ def _build_haplotype_call_result(
     novelty_call: NoveltyCall,
 ) -> HaplotypeCallResult:
     """Final per-haplotype row from Stage 3 consensus and Stage 4/5 calls."""
-    mean_qv = (sum(hap.qv) / len(hap.qv)) if hap.qv else 0.0
+    mean_qv = _mean_qv(hap)
     min_qv = min(hap.qv) if hap.qv else 0
     result = HaplotypeCallResult(
         gene=gene, haplotype_index=h_idx, cn=cn_int,
@@ -340,6 +344,7 @@ def _run_sample_core(
     min_haplotype_read_ratio: float = 0.1,
     pre_search_min_reads_per_haplotype: int = 3,
     pre_search_min_haplotype_read_ratio: float = 0.0,
+    requalify_mean_qv: float = 50.0,
     max_read_mismatch_rate: float = 0.06,
     stage1_n_best: int = 1,
     n_threads: int = 4,
@@ -364,6 +369,17 @@ def _run_sample_core(
     floor (genotype.py). Separate from min_reads_per_haplotype /
     min_haplotype_read_ratio, the post-consensus collapse check, so each can
     be ablated alone. The pre-search ratio defaults to 0.0 (off).
+
+    requalify_mean_qv: if a cn>1 gene yields a haplotype whose consensus
+    mean QV is below this while another haplotype clears it, that
+    haplotype's reads are dropped and Stage 2-3 rerun once on the rest.
+    Aimed at paralog reads taking a template slot (DRB1 in DR53/DR53
+    samples: a DRB1*07 "haplotype" built from DRB4/DRB7-like reads, so
+    two *04 alleles get merged into one). Default 50: on 1000G R10 DRB1
+    (245 samples) the net 2-field gain was +1 at 30 and +4 at 50 (A +1,
+    DRB1 +3; HG03045/HG03433 leaks pass output.py's min_mean_qv of 30). It
+    rarely separates two *04 alleles, though: with the leak dropped they
+    still collapse. 0.0 = off. Provisional (invariant 11).
     """
     if ont_config is None:
         ont_config = load_ont_r10_config()
@@ -495,7 +511,9 @@ def _run_sample_core(
             continue
         if progress:
             progress(f"Stage 2-3: {gene} template selection + consensus (cn={cn_int})")
-        try:
+        def select_and_build(
+            matrix: GeneAssignmentMatrix, cn_int: int = cn_int,
+        ) -> tuple[TemplateCall, tuple[HaplotypeConsensus, ...]]:
             call = select_template_set_ont_r10(
                 matrix, reads, cn=cn_int, pool_fasta=pool_fasta,
                 config=ont_config, n_threads=n_threads, minimap2_bin=minimap2_bin,
@@ -522,6 +540,23 @@ def _run_sample_core(
                         matrix, reads, call, pool_fasta=pool_fasta, config=ont_config,
                         n_threads=n_threads, minimap2_bin=minimap2_bin,
                     )
+            return call, haps
+
+        try:
+            call, haps = select_and_build(matrix)
+            weak = [h for h in haps if _mean_qv(h) < requalify_mean_qv]
+            if requalify_mean_qv > 0 and weak and len(weak) < len(haps):
+                # A low-QV haplotype next to a good one: its reads likely
+                # don't belong to this gene. Drop them, rerun once.
+                drop = {rid for h in weak for rid in h.assigned_read_ids}
+                kept = subset_matrix_by_read_ids(matrix, set(matrix.read_ids) - drop)
+                if kept is not None:
+                    if progress:
+                        progress(
+                            f"Stage 2-3: {gene} requalify: dropped {len(drop)} read(s) of "
+                            f"{', '.join(f'{h.template_allele} (QV {_mean_qv(h):.1f})' for h in weak)}"
+                        )
+                    call, haps = select_and_build(kept)
         except ValueError as e:
             failures.append(GeneFailure(gene, f"template selection/consensus failed: {e}"))
             continue
@@ -548,6 +583,7 @@ def _run_sample_core(
             f"{gene}#{h_idx}": cands for gene, h_idx, _cn_int, _hap, cands in pending_haplotypes
         },
         reads=reads,
+        models_path=models_path, cds_catalogue_path=cds_catalogue_path,
     )
     for gene, h_idx, cn_int, hap, _cands in pending_haplotypes:
         key = f"{gene}#{h_idx}"
@@ -615,6 +651,7 @@ def run_sample(
     min_haplotype_read_ratio: float = 0.1,
     pre_search_min_reads_per_haplotype: int = 3,
     pre_search_min_haplotype_read_ratio: float = 0.0,
+    requalify_mean_qv: float = 50.0,
     max_read_mismatch_rate: float = 0.06,
     stage1_n_best: int = 1,
     n_threads: int = 4,
@@ -638,6 +675,7 @@ def run_sample(
         min_haplotype_read_ratio=min_haplotype_read_ratio,
         pre_search_min_reads_per_haplotype=pre_search_min_reads_per_haplotype,
         pre_search_min_haplotype_read_ratio=pre_search_min_haplotype_read_ratio,
+        requalify_mean_qv=requalify_mean_qv,
         max_read_mismatch_rate=max_read_mismatch_rate, stage1_n_best=stage1_n_best,
         n_threads=n_threads, minimap2_bin=minimap2_bin, samtools_bin=samtools_bin, progress=progress,
     )
@@ -772,6 +810,7 @@ def run_sample_phased(
     min_haplotype_read_ratio: float = 0.1,
     pre_search_min_reads_per_haplotype: int = 3,
     pre_search_min_haplotype_read_ratio: float = 0.0,
+    requalify_mean_qv: float = 50.0,
     max_read_mismatch_rate: float = 0.06,
     stage1_n_best: int = 1,
     min_phased_tagged_fraction: float = 0.5,
@@ -823,6 +862,7 @@ def run_sample_phased(
         min_haplotype_read_ratio=min_haplotype_read_ratio,
         pre_search_min_reads_per_haplotype=pre_search_min_reads_per_haplotype,
         pre_search_min_haplotype_read_ratio=pre_search_min_haplotype_read_ratio,
+        requalify_mean_qv=requalify_mean_qv,
         max_read_mismatch_rate=max_read_mismatch_rate, stage1_n_best=stage1_n_best,
         n_threads=n_threads, minimap2_bin=minimap2_bin, samtools_bin=samtools_bin, progress=progress,
     )
@@ -953,6 +993,7 @@ def run_sample_phased(
         pool_fasta=pool_fasta, pool_meta=pool_meta,
         config=ont_config, params=typing_params,
         n_threads=n_threads, minimap2_bin=minimap2_bin,
+        models_path=models_path, cds_catalogue_path=cds_catalogue_path,
     )
     haplotypes_called_by_gene: dict[str, list[int]] = {}
     for gene, hp_val, hap in pending_phased_haplotypes:

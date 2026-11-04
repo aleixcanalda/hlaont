@@ -164,6 +164,11 @@ def _add_run_subparser(subparsers: argparse._SubParsersAction) -> None:
              "falls back to the unphased path for that gene only. "
     )
     ap.add_argument(
+        "--requalify-mean-qv", type=float, default=None,
+        help="Rerun Stage 2-3 once without a haplotype whose consensus mean QV is below this "
+             "(paralog reads taking a template slot). Default 50; 0 disables.",
+    )
+    ap.add_argument(
         "--db-dir", type=Path, default=None,
         help=f"Template pool directory built by `hlaont update-db` (default: ${DB_DIR_ENV_VAR}, "
              "else resources/templates/pool/ inside the package)",
@@ -395,6 +400,7 @@ def _run_command(args: argparse.Namespace) -> int:
             "anchors_meta_path": args.anchors_meta_path,
             "chr17_control_fasta": args.chr17_control_fasta,
             "c4_flanked_fasta": args.c4_flanked_fasta,
+            "requalify_mean_qv": args.requalify_mean_qv,
         }.items() if v is not None
     })
     if control_depth is not None:
