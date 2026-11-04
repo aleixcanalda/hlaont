@@ -334,13 +334,15 @@ def _type_haplotype_from_single_row_matrix(
             read_id=read_id, sequence=consensus.sequence, quality=None,
             hits=(AnchorHit(gene=consensus.gene, allele="__consensus__", coverage=1.0, mismatch_rate=0.0),),
         )
-        matrix = realign_to_candidates(
+        dense = realign_to_candidates(
             consensus.gene, [synthetic_read], allele_sequences_dense,
             n_threads=n_threads, minimap2_bin=minimap2_bin,
             min_secondary_ratio=_STAGE4_FALLBACK_MIN_SECONDARY_RATIO,
         )
-        read_id = matrix.read_ids[0]
-        candidates = candidate_alleles(matrix)
+        # No dense hit (seen on an R9 consensus): keep the whole-pool result.
+        dense_candidates = candidate_alleles(dense) if dense.read_ids else ()
+        if dense_candidates:
+            matrix, read_id, candidates = dense, dense.read_ids[0], dense_candidates
 
     allele_sequences = load_allele_sequences(pool_fasta, candidates)
     read_sequences = {read_id: consensus.sequence}

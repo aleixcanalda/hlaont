@@ -105,3 +105,37 @@ def test_type_haplotype_is_deterministic(tmp_path):
     c1 = type_haplotype(consensus, pool_fasta=fasta, pool_meta=meta, n_threads=2)
     c2 = type_haplotype(consensus, pool_fasta=fasta, pool_meta=meta, n_threads=2)
     assert c1 == c2
+
+
+def test_empty_dense_realignment_keeps_whole_pool_call(tmp_path, monkeypatch):
+    # A consensus with no hit in the dense fallback (seen on an R9 sample)
+    # used to raise IndexError; it must fall back to the whole-pool result.
+    import numpy as np
+
+    from hlaont.stages import hla_typing
+    from hlaont.stages.assign import GeneAssignmentMatrix
+
+    rng = random.Random(7)
+    base = _random_seq(600, rng)
+    records = {
+        "GENE1*01:01:01:01": base,
+        "GENE1*02:01:01:01": _random_seq(600, random.Random(11)),
+    }
+    fasta, meta = _build_pool(tmp_path, records)
+    consensus = HaplotypeConsensus(
+        gene="GENE1", template_allele="GENE1*01:01:01:01",
+        n_reads_assigned=10, sequence=_substitute(base, 300, rng),
+        qv=tuple([40] * len(base)), variants=(),
+    )
+
+    def empty_realign(gene, reads, allele_sequences, **kwargs):
+        ids = tuple(sorted(allele_sequences))
+        zeros = np.zeros((0, len(ids)), dtype=np.int32)
+        return GeneAssignmentMatrix(gene, (), ids, zeros, zeros.copy(), zeros.copy())
+
+    monkeypatch.setattr(hla_typing, "realign_to_candidates", empty_realign)
+    call = type_haplotype(
+        consensus, pool_fasta=fasta, pool_meta=meta, n_threads=2,
+        extra_candidates=("GENE1*02:01:01:01",),
+    )
+    assert call.called_allele == "GENE1*01:01:01:01"
